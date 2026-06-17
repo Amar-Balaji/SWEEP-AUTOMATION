@@ -203,10 +203,10 @@ rollout sweepRollout "Sweep Script" width:560 height:620
         pairs
     )
 
-    -- First object mapped to this MODEL #.
-    fn lookupObj pairs num =
+    -- First #(object, variant) mapped to this MODEL #.
+    fn lookupPair pairs num =
     (
-        for p in pairs where (numEqual p[1] num) do return p[2]
+        for p in pairs where (numEqual p[1] num) do return #(p[2], p[3])
         undefined
     )
 
@@ -478,21 +478,28 @@ rollout sweepRollout "Sweep Script" width:560 height:620
     (
         local createdAll = #()
         local roots = #()
+        local rootVars = #()
+        local hasLeftSofa = false
+        local hasRightSofa = false
         for num in entry.nums do
         (
-            local src = lookupObj pairs num
-            if src == undefined or not isValidNode src then
+            local pr = lookupPair pairs num
+            if pr == undefined or not isValidNode pr[1] then
                 appendIfUnique missingOut num
             else
             (
                 local newNodes = #()
-                try (newNodes = cloneAsInstance src) catch(newNodes = #())
+                try (newNodes = cloneAsInstance pr[1]) catch(newNodes = #())
                 if newNodes.count > 0 then
                 (
                     local root = findCloneRoot newNodes
                     if root != undefined and isValidNode root then
                     (
                         append roots root
+                        append rootVars pr[2]
+                        local vtag = trimAll (toUpper pr[2])
+                        if vtag == "LEFT SIDE SOFA"  then hasLeftSofa = true
+                        if vtag == "RIGHT SIDE SOFA" then hasRightSofa = true
                         for n in newNodes where isValidNode n do
                             appendIfUnique createdAll n
                     )
@@ -501,21 +508,41 @@ rollout sweepRollout "Sweep Script" width:560 height:620
         )
         if roots.count == 0 then return 0
 
-        -- Lay the pieces out along +X, touching, backs on one line.
+        -- Order left -> right: any LEFT SIDE SOFA first (extreme left), the
+        -- rest in name order, then any RIGHT SIDE SOFA last (extreme right).
+        -- Lay them out along +X, touching, backs on one line.
+        local ordered = #()
+        for i = 1 to roots.count do
+            if (trimAll (toUpper rootVars[i])) == "LEFT SIDE SOFA" then append ordered roots[i]
+        for i = 1 to roots.count do
+        (
+            local v = trimAll (toUpper rootVars[i])
+            if v != "LEFT SIDE SOFA" and v != "RIGHT SIDE SOFA" then append ordered roots[i]
+        )
+        for i = 1 to roots.count do
+            if (trimAll (toUpper rootVars[i])) == "RIGHT SIDE SOFA" then append ordered roots[i]
+
         local cursor = 0.0
-        for r in roots do cursor = placeAdjacentX r cursor
+        for r in ordered do cursor = placeAdjacentX r cursor
+
+        -- Overall Z rotation: LEFT SIDE SOFA -> -55, RIGHT SIDE SOFA -> +55,
+        -- otherwise the view-type angle. RIGHT is checked last, so if a right
+        -- side sofa is anywhere in the list it wins (+55).
+        local overallRot = entry.rot
+        if hasLeftSofa  then overallRot = -55.0
+        if hasRightSofa then overallRot =  55.0
 
         -- Group the set, rotate it about its bbox centre on Z, then move the
         -- whole group so its bbox centre sits at the world origin (X=0, Y=0).
         local grp = undefined
-        try (grp = group roots name:entry.fullName) catch(grp = undefined)
+        try (grp = group ordered name:entry.fullName) catch(grp = undefined)
         if grp != undefined then
         (
-            if entry.rot != 0.0 then
+            if overallRot != 0.0 then
             (
                 local gbb = groupUnionBBox grp
                 local ctr = (gbb[1] + gbb[2]) / 2.0
-                try (about ctr (rotate grp (eulerangles 0 0 entry.rot))) catch()
+                try (about ctr (rotate grp (eulerangles 0 0 overallRot))) catch()
             )
             local gbb2 = groupUnionBBox grp
             local gctr = (gbb2[1] + gbb2[2]) / 2.0
@@ -698,7 +725,7 @@ rollout sweepRollout "Sweep Script" width:560 height:620
         local colVar = dotNetObject "System.Windows.Forms.DataGridViewComboBoxColumn"
         colVar.HeaderText = "VARIANT"
         colVar.FillWeight = 32
-        local varOptions = #("SINGLE SEATER", "DOUBLE SEATER", "LOVE SEAT", "ARM CHAIR", "LEFT SIDE SOFA", "RIGHT SIDE SOFA", "OTTOMAN")
+        local varOptions = #("DEFAULT", "SINGLE SEATER", "DOUBLE SEATER", "LOVE SEAT", "ARM CHAIR", "LEFT SIDE SOFA", "RIGHT SIDE SOFA", "OTTOMAN")
         for s in varOptions do colVar.Items.Add s
         dgvKits.Columns.Add colVar
 

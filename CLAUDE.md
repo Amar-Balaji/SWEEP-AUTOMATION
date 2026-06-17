@@ -133,13 +133,22 @@ template camera into the layer. Each name → its own hidden layer + group + cam
 - **Input** = Excel file of names (not manual entry).
 - **Mapping grid** = MODEL # → ONE scene object. Lookup is by MODEL # only (`lookupObj`).
   Columns: MODEL # / VARIANT / SELECT OBJECT. **VARIANT is a descriptive seating-type label
-  only** (SINGLE SEATER / DOUBLE SEATER / LOVE SEAT / ARM CHAIR / LEFT SIDE SOFA / RIGHT SIDE
-  SOFA / OTTOMAN) — it does NOT affect which object is cloned.
+  only** (DEFAULT / SINGLE SEATER / DOUBLE SEATER / LOVE SEAT / ARM CHAIR / LEFT SIDE SOFA /
+  RIGHT SIDE SOFA / OTTOMAN) — it does NOT affect which object is cloned (but LEFT/RIGHT SIDE
+  SOFA drive ordering + rotation overrides; see below).
 - **Arrangement** = world +X, name order, bounding boxes touching, zero gap (`placeAdjacentX`).
   Each piece's BACK edge (+Y / bbox max.y) is aligned to a common line (Y=0); pieces extend
   toward −Y (front). Models keep their own orientation; only the final group is rotated
   (`about ctr rotate ... Z`). After rotation the whole group is moved so its bbox centre sits
   at the world origin (X=0, Y=0).
+- **SIDE SOFA rules** (variant-driven; `lookupPair` returns node + variant):
+  - `LEFT SIDE SOFA` → forced to the **extreme left** of the +X line (placed first); overall
+    group rotation overridden to **−55°**.
+  - `RIGHT SIDE SOFA` → forced to the **extreme right** (placed last); overall rotation **+55°**.
+  - Order is: left sofa(s) → middle pieces (name order) → right sofa(s).
+  - Rotation: `LEFT SIDE SOFA` → −55, `RIGHT SIDE SOFA` → +55. RIGHT is checked **last**, so if a
+    right side sofa is anywhere in the list it wins (+55) even alongside a left one. E.g.
+    `87214-66-17-ANGLE` where 17 = RIGHT SIDE SOFA → +55°.
 - **Camera** = inline `PICK VRAY CAMERA` button only (CAM FIT/MODE/RATIO controls removed). A
   copy of the template camera+target is cloned into EVERY created layer (`cloneCameraToLayer`).
   Placement: **target at world X=0, Y=0** (Z = object's vertical mid); **camera distance
