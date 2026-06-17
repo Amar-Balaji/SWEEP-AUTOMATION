@@ -1,0 +1,8 @@
+# Generated runtime settings
+Sweep Script/settings/
+*.ini
+
+# OS / temp
+Thumbs.db
+desktop.ini
+~$*
