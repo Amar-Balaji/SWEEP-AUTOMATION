@@ -49,7 +49,7 @@ Workflow:
     1. Enter SERIES NAME (e.g. 87214).
     2. Map each MODEL # to a scene object (tag its seating type in VARIANT).
     3. Browse to the Excel file (one full name per row).
-    4. Optional: PICK VRAY CAMERA and set CAM options.
+    4. Optional: PICK VRAY CAMERA (a framed copy is cloned into every layer).
     5. Click RUN -> preview lists every arrangement -> RUN to confirm.
 */
 
@@ -86,7 +86,7 @@ rollout sweepPreviewDlg "Confirm Sweeps" width:460 height:530
     on btnCancel pressed do destroyDialog sweepPreviewDlg
 )
 
-rollout sweepRollout "Sweep Script" width:560 height:660
+rollout sweepRollout "Sweep Script" width:560 height:620
 (
     local noneTag        = "(none)"
     local pendingSeries  = ""
@@ -112,18 +112,11 @@ rollout sweepRollout "Sweep Script" width:560 height:660
     button   btnBrowse "..."        pos:[450,452] width:90  height:22
 
     -- ---- Camera section (inline) -----------------------------------
-    label  lblCamHeader "CAMERA"               pos:[20,486]  width:100
-    button btnPickCam   "PICK VRAY CAMERA"     pos:[20,506]  width:160 height:30
-    label  lblPickedCam "(no camera picked)"   pos:[190,513] width:350 height:18
+    label  lblCamHeader "CAMERA"             pos:[20,486]  width:100
+    button btnPickCam   "PICK VRAY CAMERA"   pos:[20,506]  width:160 height:30
+    label  lblPickedCam "(no camera picked)" pos:[190,513] width:350 height:18
 
-    label        lblCamFit   "CAM FIT %"                                   pos:[20,548]  width:70
-    spinner      spnCamFit   ""                                            pos:[95,546]  width:50 range:[50,100,80] type:#integer
-    label        lblCamMode  "CAM MODE"                                    pos:[155,548] width:60
-    dropdownList ddlCamMode  items:#("AUTO+CAP","AUTO","TEMPLATE","RATIO") pos:[220,546] width:105 selection:1
-    label        lblCamRatio "RATIO"                                       pos:[335,548] width:45
-    spinner      spnCamRatio ""                                            pos:[385,546] width:60 range:[0.5,10,2.67] type:#float scale:0.01
-
-    button btnRun "RUN" pos:[20,588] width:520 height:34
+    button btnRun "RUN" pos:[20,550] width:520 height:34
 
     fn trimAll s = trimLeft (trimRight s)
 
@@ -418,24 +411,6 @@ rollout sweepRollout "Sweep Script" width:560 height:660
         cursorX + w
     )
 
-    -- Horizontal FOV (degrees) of the picked camera.
-    fn cameraHFOVDeg cam =
-    (
-        local fl = undefined
-        local fg = undefined
-        try (fl = cam.focal_length) catch()
-        try (fg = cam.film_gate) catch()
-        if fg == undefined then try (fg = cam.film_width) catch()
-        if fl != undefined and fg != undefined and fl > 0 then
-            2.0 * (atan (fg / (2.0 * fl)))
-        else
-        (
-            local f = 45.0
-            try (f = cam.fov) catch()
-            f
-        )
-    )
-
     -- Clone the picked template camera + target into `layer`, rename after
     -- the package, and position to frame the arrangement (camera X locked
     -- to the package centre so it stays centred in frame).
@@ -481,59 +456,18 @@ rollout sweepRollout "Sweep Script" width:560 height:660
                 local camNode = newNodes[1]
                 local tgtNode = newNodes[2]
 
-                local pkgW = mx.x - mn.x
-                local pkgD = mx.y - mn.y
-                local pkgH = mx.z - mn.z
-                local pkgCenterX = (mn.x + mx.x) / 2.0
-                local pkgCenterY = (mn.y + mx.y) / 2.0
-                local tgtZ = (mn.z + mx.z) / 2.0
-
+                local pkgW = mx.x - mn.x          -- A: object width, end to end (X).
+                local tgtZ = (mn.z + mx.z) / 2.0  -- target vertical mid of the object.
                 local camZ = 100.0 + (kitCount as float) * 20.0
 
-                local fitDim = if pkgW > pkgH then pkgW else pkgH
+                -- Width : (target -> camera) distance ratio  A / B = 0.3,
+                -- so B = A / 0.3. Camera is pulled back along -Y by B.
+                local widthRatio = 0.3
+                local camDist = if widthRatio > 0.0001 then (pkgW / widthRatio) else pkgW
 
-                local fitPct = 80
-                try (fitPct = spnCamFit.value) catch()
-                if fitPct == undefined or fitPct < 50 then fitPct = 50
-                if fitPct > 100 then fitPct = 100
-                local marginFactor = 100.0 / (fitPct as float)
-
-                local hFOV = cameraHFOVDeg camNode
-                local halfFOV = hFOV / 2.0
-                local tanHalf = tan halfFOV
-                local autoBase = 500.0
-                if tanHalf > 0.0001 then
-                    autoBase = (fitDim / 2.0) / tanHalf
-                local autoDist = (autoBase + pkgD / 2.0) * marginFactor
-
-                local templateDist = 0.0
-                try
-                (
-                    if pickedCamera.target != undefined and isValidNode pickedCamera.target then
-                    (
-                        local tDiff = pickedCamera.pos - pickedCamera.target.pos
-                        templateDist = length tDiff
-                    )
-                )
-                catch()
-                local scaledTemplate = templateDist * marginFactor
-
-                local mode = "AUTO+CAP"
-                try (mode = ddlCamMode.selected) catch()
-                local distance = autoDist
-                if mode == "RATIO" then
-                (
-                    local ratio = 2.67
-                    try (ratio = spnCamRatio.value) catch()
-                    distance = pkgW * ratio
-                )
-                else if mode == "TEMPLATE" and templateDist > 0 then
-                    distance = scaledTemplate
-                else if mode == "AUTO+CAP" and templateDist > 0 then
-                    distance = if scaledTemplate < autoDist then scaledTemplate else autoDist
-
-                try (camNode.pos = [pkgCenterX, pkgCenterY - distance, camZ]) catch()
-                try (tgtNode.pos = [pkgCenterX, pkgCenterY, tgtZ]) catch()
+                -- Target on the world X,Y origin; camera straight back on -Y.
+                try (tgtNode.pos = [0, 0, tgtZ]) catch()
+                try (camNode.pos = [0, -camDist, camZ]) catch()
             )
         )
 
@@ -571,14 +505,21 @@ rollout sweepRollout "Sweep Script" width:560 height:660
         local cursor = 0.0
         for r in roots do cursor = placeAdjacentX r cursor
 
-        -- Group the set and rotate it about its bbox centre on Z.
+        -- Group the set, rotate it about its bbox centre on Z, then move the
+        -- whole group so its bbox centre sits at the world origin (X=0, Y=0).
         local grp = undefined
         try (grp = group roots name:entry.fullName) catch(grp = undefined)
-        if grp != undefined and entry.rot != 0.0 then
+        if grp != undefined then
         (
-            local gbb = groupUnionBBox grp
-            local ctr = (gbb[1] + gbb[2]) / 2.0
-            try (about ctr (rotate grp (eulerangles 0 0 entry.rot))) catch()
+            if entry.rot != 0.0 then
+            (
+                local gbb = groupUnionBBox grp
+                local ctr = (gbb[1] + gbb[2]) / 2.0
+                try (about ctr (rotate grp (eulerangles 0 0 entry.rot))) catch()
+            )
+            local gbb2 = groupUnionBBox grp
+            local gctr = (gbb2[1] + gbb2[2]) / 2.0
+            try (grp.pos = grp.pos - [gctr.x, gctr.y, 0.0]) catch()
         )
 
         -- Hidden layer named after the full name; add every node so hiding
@@ -611,9 +552,6 @@ rollout sweepRollout "Sweep Script" width:560 height:660
         (
             setINISetting p "main" "Series"    edtSeries.text
             setINISetting p "main" "ExcelPath" edtExcel.text
-            setINISetting p "main" "CamFitPct" (spnCamFit.value as string)
-            setINISetting p "main" "CamMode"   ddlCamMode.selected
-            setINISetting p "main" "CamRatio"  (spnCamRatio.value as string)
             local camName = ""
             if pickedCamera != undefined and isValidNode pickedCamera then camName = pickedCamera.name
             setINISetting p "main" "CameraName" camName
@@ -655,17 +593,6 @@ rollout sweepRollout "Sweep Script" width:560 height:660
             if s != "" then edtSeries.text = s
             local e = getINISetting p "main" "ExcelPath"
             if e != "" then edtExcel.text = e
-
-            local cf = getINISetting p "main" "CamFitPct"
-            if cf != "" then try (spnCamFit.value = (cf as integer)) catch()
-
-            local camModeItems = #("AUTO+CAP","AUTO","TEMPLATE","RATIO")
-            local cmod = getINISetting p "main" "CamMode"
-            local cmodIdx = findItem camModeItems cmod
-            if cmodIdx > 0 then ddlCamMode.selection = cmodIdx
-
-            local cr = getINISetting p "main" "CamRatio"
-            if cr != "" then try (spnCamRatio.value = (cr as float)) catch()
 
             local cn = getINISetting p "main" "CameraName"
             if cn != "" then
@@ -771,7 +698,7 @@ rollout sweepRollout "Sweep Script" width:560 height:660
         local colVar = dotNetObject "System.Windows.Forms.DataGridViewComboBoxColumn"
         colVar.HeaderText = "VARIANT"
         colVar.FillWeight = 32
-        local varOptions = #("SINGLE SEATER", "DOUBLE SEATER", "ARM CHAIR", "SIDE SOFA", "OTTOMAN")
+        local varOptions = #("SINGLE SEATER", "DOUBLE SEATER", "LOVE SEAT", "ARM CHAIR", "LEFT SIDE SOFA", "RIGHT SIDE SOFA", "OTTOMAN")
         for s in varOptions do colVar.Items.Add s
         dgvKits.Columns.Add colVar
 

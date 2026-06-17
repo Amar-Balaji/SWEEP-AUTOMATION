@@ -133,15 +133,18 @@ template camera into the layer. Each name → its own hidden layer + group + cam
 - **Input** = Excel file of names (not manual entry).
 - **Mapping grid** = MODEL # → ONE scene object. Lookup is by MODEL # only (`lookupObj`).
   Columns: MODEL # / VARIANT / SELECT OBJECT. **VARIANT is a descriptive seating-type label
-  only** (SINGLE SEATER / DOUBLE SEATER / ARM CHAIR / SIDE SOFA / OTTOMAN) — it does NOT affect
-  which object is cloned.
+  only** (SINGLE SEATER / DOUBLE SEATER / LOVE SEAT / ARM CHAIR / LEFT SIDE SOFA / RIGHT SIDE
+  SOFA / OTTOMAN) — it does NOT affect which object is cloned.
 - **Arrangement** = world +X, name order, bounding boxes touching, zero gap (`placeAdjacentX`).
   Each piece's BACK edge (+Y / bbox max.y) is aligned to a common line (Y=0); pieces extend
   toward −Y (front). Models keep their own orientation; only the final group is rotated
-  (`about ctr rotate ... Z`).
-- **Camera** = inline `PICK VRAY CAMERA` button + CAM FIT %/MODE/RATIO options. A framed copy
-  of the template camera+target is cloned into EVERY created layer (`cloneCameraToLayer`,
-  ported from pkg; cam X locked to the package centre). Cam Z = `100 + modelCount*20`.
+  (`about ctr rotate ... Z`). After rotation the whole group is moved so its bbox centre sits
+  at the world origin (X=0, Y=0).
+- **Camera** = inline `PICK VRAY CAMERA` button only (CAM FIT/MODE/RATIO controls removed). A
+  copy of the template camera+target is cloned into EVERY created layer (`cloneCameraToLayer`).
+  Placement: **target at world X=0, Y=0** (Z = object's vertical mid); **camera distance
+  B = A / 0.3** where A = object width (X extent), camera pulled straight back on −Y to
+  `[0, -B, camZ]`. Cam Z = `100 + modelCount*20`.
 
 ## Key functions
 `parseSweepName` (name→struct), `buildLookup`/`lookupObj` (MODEL #→object), `numEqual`
