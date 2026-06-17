@@ -7,24 +7,27 @@ Builds named "sweep" arrangements from an Excel list of full names like:
     87214-08-ANGLE-SW-AGR
     87214-10-17-08-ANGLE-CLSD-SW-AGR
     87214-38-35-20-14-ANGLE-SW-AGR
-    87214-25-DETAIL-CONTROL-SW-AGR
     87214-25-SIDE-OPEN-SW-AGR
 
 Name format:  SERIES - MODEL(s) - VIEWTYPE - [SW] - AGR
     SERIES    : e.g. 87214 (stripped using the SERIES NAME field)
     MODEL(s)  : one or more numeric tokens (08 / 10-17-08 / 38-35-20-14).
                 Each number is mapped to a scene object in the grid.
-    VIEWTYPE  : ANGLE / BACK-ANGLE / SIDE / HEAD(-ON) / DETAIL, optionally
-                with a CLSD / OPEN / CONTROL variant suffix.
+    VIEWTYPE  : ANGLE / BACK-ANGLE / SIDE / HEAD(-ON) / DETAIL (plus any
+                extra words such as CLSD / OPEN / CONTROL, which only
+                affect rotation via the base keyword - see table below).
     SW, AGR   : ignored suffix tokens.
 
 Per name the script:
     1. Clones the mapped object for every model number (in name order).
     2. Lays them out along +X, in name order, bounding boxes TOUCHING
-       (no gap).
+       (no gap), with every piece's BACK edge (+Y) aligned to one straight
+       line so all backs sit on the same row.
     3. Groups the whole set and rotates the group on Z by the angle that
        the VIEWTYPE implies.
-    4. Drops the group on its own hidden layer, named after the full name.
+    4. Drops the group on its own hidden layer, named after the full name,
+       and clones the picked template camera into that layer, framed on
+       the arrangement.
 
 Rotation by VIEWTYPE (whole-group Z rotation):
     ANGLE  (incl. ANGLE-CLSD / ANGLE-OPEN) ....  35
@@ -33,21 +36,24 @@ Rotation by VIEWTYPE (whole-group Z rotation):
     HEAD / HEAD-ON ............................   0  (no rotation)
     DETAIL (incl. DETAIL-CONTROL) ............   0  (no rotation)
 
-Variant mapping:
-    CLSD / OPEN / CONTROL are treated as SEPARATE scene objects. Map them
-    in the grid with the matching VARIANT. If a name needs a variant a
-    model does not have, the script falls back to that model's DEFAULT
-    object. Unmapped numbers are reported after the run.
+Model -> object map:
+    Each MODEL # maps to exactly ONE scene object (lookup is by MODEL #).
+    The VARIANT column is a descriptive seating-type tag only
+    (Single Seater / Double Seater / Arm Chair / Side Sofa / Ottoman).
+
+Camera:
+    Click "PICK VRAY CAMERA" and pick a template camera. A framed copy of
+    that camera (+ its target) is cloned into EVERY package layer.
 
 Workflow:
     1. Enter SERIES NAME (e.g. 87214).
-    2. Map each MODEL # + VARIANT to a scene object in the grid.
-       Use "+ ADD ROW" / "DELETE ROW" and "REFRESH SCENE OBJECTS".
+    2. Map each MODEL # to a scene object (tag its seating type in VARIANT).
     3. Browse to the Excel file (one full name per row).
-    4. Click RUN -> preview lists every arrangement -> RUN to confirm.
+    4. Optional: PICK VRAY CAMERA and set CAM options.
+    5. Click RUN -> preview lists every arrangement -> RUN to confirm.
 */
 
-struct SweepName (fullName, nums, variant, rot, viewStr)
+struct SweepName (fullName, nums, rot, viewStr)
 
 rollout sweepPreviewDlg "Confirm Sweeps" width:460 height:530
 (
@@ -80,31 +86,44 @@ rollout sweepPreviewDlg "Confirm Sweeps" width:460 height:530
     on btnCancel pressed do destroyDialog sweepPreviewDlg
 )
 
-rollout sweepRollout "Sweep Script" width:560 height:600
+rollout sweepRollout "Sweep Script" width:560 height:660
 (
-    local noneTag         = "(none)"
-    local pendingSeries   = ""
-    local pendingPairs    = #()
-    local pendingEntries  = #()
+    local noneTag        = "(none)"
+    local pendingSeries  = ""
+    local pendingPairs   = #()
+    local pendingEntries = #()
+    local pickedCamera   = undefined
 
     label lblTitle "SWEEP SCRIPT" pos:[210,12] width:200 height:18
 
     label    lblSeries "SERIES NAME" pos:[20,44]  width:110
     edittext edtSeries ""            pos:[140,41] width:400 height:22
 
-    label  lblMapHeader "MODEL -> OBJECT MAP"     pos:[20,74]  width:160
-    button btnRefresh   "REFRESH SCENE OBJECTS"   pos:[360,70] width:180 height:24
+    label  lblMapHeader "MODEL -> OBJECT MAP"   pos:[20,74]  width:160
+    button btnRefresh   "REFRESH SCENE OBJECTS" pos:[360,70] width:180 height:24
 
-    dotNetControl dgvKits "System.Windows.Forms.DataGridView" pos:[20,100] width:520 height:340
+    dotNetControl dgvKits "System.Windows.Forms.DataGridView" pos:[20,100] width:520 height:300
 
-    dotNetControl btnDelKit "Button" pos:[160,450] width:130 height:30
-    dotNetControl btnAddKit "Button" pos:[300,450] width:160 height:30
+    dotNetControl btnDelKit "Button" pos:[160,410] width:130 height:30
+    dotNetControl btnAddKit "Button" pos:[300,410] width:160 height:30
 
-    label    lblExcel  "EXCEL FILE" pos:[20,492]  width:100
-    edittext edtExcel  ""           pos:[125,489] width:320 height:22 readonly:true
-    button   btnBrowse "..."        pos:[450,489] width:90  height:22
+    label    lblExcel  "EXCEL FILE" pos:[20,455]  width:100
+    edittext edtExcel  ""           pos:[125,452] width:320 height:22 readonly:true
+    button   btnBrowse "..."        pos:[450,452] width:90  height:22
 
-    button btnRun "RUN" pos:[20,528] width:520 height:34
+    -- ---- Camera section (inline) -----------------------------------
+    label  lblCamHeader "CAMERA"               pos:[20,486]  width:100
+    button btnPickCam   "PICK VRAY CAMERA"     pos:[20,506]  width:160 height:30
+    label  lblPickedCam "(no camera picked)"   pos:[190,513] width:350 height:18
+
+    label        lblCamFit   "CAM FIT %"                                   pos:[20,548]  width:70
+    spinner      spnCamFit   ""                                            pos:[95,546]  width:50 range:[50,100,80] type:#integer
+    label        lblCamMode  "CAM MODE"                                    pos:[155,548] width:60
+    dropdownList ddlCamMode  items:#("AUTO+CAP","AUTO","TEMPLATE","RATIO") pos:[220,546] width:105 selection:1
+    label        lblCamRatio "RATIO"                                       pos:[335,548] width:45
+    spinner      spnCamRatio ""                                            pos:[385,546] width:60 range:[0.5,10,2.67] type:#float scale:0.01
+
+    button btnRun "RUN" pos:[20,588] width:520 height:34
 
     fn trimAll s = trimLeft (trimRight s)
 
@@ -166,7 +185,8 @@ rollout sweepRollout "Sweep Script" width:560 height:600
         )
     )
 
-    -- Grid -> array of #(numStr, node, variantStr).
+    -- Grid -> array of #(numStr, node, variantStr). Lookup is by MODEL #;
+    -- variantStr is a descriptive seating-type tag only.
     fn buildLookup =
     (
         local pairs = #()
@@ -175,12 +195,11 @@ rollout sweepRollout "Sweep Script" width:560 height:600
         (
             local row = dgvKits.Rows.Item[i]
             local numStr = ""
-            local varStr = "DEFAULT"
+            local varStr = ""
             local objStr = ""
             try (if row.Cells.Item[0].Value != undefined then numStr = trimAll (row.Cells.Item[0].Value as string)) catch()
             try (if row.Cells.Item[1].Value != undefined then varStr = (row.Cells.Item[1].Value as string))         catch()
             try (if row.Cells.Item[2].Value != undefined then objStr = (row.Cells.Item[2].Value as string))         catch()
-            if varStr == "" then varStr = "DEFAULT"
             if numStr != "" and objStr != "" and objStr != noneTag then
             (
                 local n = getNodeByName objStr
@@ -191,11 +210,10 @@ rollout sweepRollout "Sweep Script" width:560 height:600
         pairs
     )
 
-    -- Exact (number, variant) match, else fall back to (number, DEFAULT).
-    fn lookupObj pairs num variant =
+    -- First object mapped to this MODEL #.
+    fn lookupObj pairs num =
     (
-        for p in pairs where (numEqual p[1] num) and p[3] == variant do return p[2]
-        for p in pairs where (numEqual p[1] num) and p[3] == "DEFAULT" do return p[2]
+        for p in pairs where (numEqual p[1] num) do return p[2]
         undefined
     )
 
@@ -236,12 +254,6 @@ rollout sweepRollout "Sweep Script" width:560 height:600
             viewStr += toUpper v
         )
 
-        -- Variant from suffix tokens.
-        local variant = "DEFAULT"
-        if matchPattern viewStr pattern:"*CLSD*"    then variant = "CLSD"
-        else if matchPattern viewStr pattern:"*OPEN*"    then variant = "OPEN"
-        else if matchPattern viewStr pattern:"*CONTROL*" then variant = "CONTROL"
-
         -- Whole-group Z rotation from the base keyword. BACK-ANGLE must be
         -- tested before ANGLE because it also contains "ANGLE".
         local rot = 0.0
@@ -252,7 +264,7 @@ rollout sweepRollout "Sweep Script" width:560 height:600
         else if matchPattern viewStr pattern:"*DETAIL*" then rot = 0.0
         else rot = 0.0
 
-        SweepName fullName:txt nums:nums variant:variant rot:rot viewStr:viewStr
+        SweepName fullName:txt nums:nums rot:rot viewStr:viewStr
     )
 
     fn readExcelLines filePath =
@@ -395,15 +407,137 @@ rollout sweepRollout "Sweep Script" width:560 height:600
     )
 
     -- Move node (keeping its own orientation) so its bbox sits against the
-    -- running X cursor, centred on Y=0 and resting on Z=0. Returns the new
-    -- cursor (= this node's right edge) so the next piece touches it.
+    -- running X cursor, with its BACK edge (+Y, bbox max.y) on the common
+    -- back line (Y=0) and resting on Z=0. Returns the new cursor (= this
+    -- node's right edge) so the next piece touches it.
     fn placeAdjacentX node cursorX =
     (
         local bb = groupUnionBBox node
         local w  = bb[2].x - bb[1].x
-        local cy = (bb[1].y + bb[2].y) / 2.0
-        node.pos = node.pos + [cursorX - bb[1].x, 0.0 - cy, 0.0 - bb[1].z]
+        node.pos = node.pos + [cursorX - bb[1].x, 0.0 - bb[2].y, 0.0 - bb[1].z]
         cursorX + w
+    )
+
+    -- Horizontal FOV (degrees) of the picked camera.
+    fn cameraHFOVDeg cam =
+    (
+        local fl = undefined
+        local fg = undefined
+        try (fl = cam.focal_length) catch()
+        try (fg = cam.film_gate) catch()
+        if fg == undefined then try (fg = cam.film_width) catch()
+        if fl != undefined and fg != undefined and fl > 0 then
+            2.0 * (atan (fg / (2.0 * fl)))
+        else
+        (
+            local f = 45.0
+            try (f = cam.fov) catch()
+            f
+        )
+    )
+
+    -- Clone the picked template camera + target into `layer`, rename after
+    -- the package, and position to frame the arrangement (camera X locked
+    -- to the package centre so it stays centred in frame).
+    fn cloneCameraToLayer layer pkgName pkgNodes kitCount =
+    (
+        if pickedCamera == undefined or not isValidNode pickedCamera then return undefined
+        local sources = #(pickedCamera)
+        local tgt = undefined
+        try (tgt = pickedCamera.target) catch()
+        if tgt != undefined and isValidNode tgt then append sources tgt
+        local newNodes
+        try (maxOps.cloneNodes sources cloneType:#copy newNodes:&newNodes) catch(newNodes = undefined)
+        if newNodes == undefined or newNodes.count == 0 then return undefined
+        for n in newNodes where isValidNode n do
+            try (layer.addNode n) catch()
+        try
+        (
+            if newNodes.count >= 1 then newNodes[1].name = uniqueName (pkgName + "_Cam")
+            if newNodes.count >= 2 then newNodes[2].name = uniqueName (pkgName + "_Cam_Target")
+        )
+        catch()
+
+        if newNodes.count >= 2 then
+        (
+            local mn = [1e30, 1e30, 1e30]
+            local mx = [-1e30, -1e30, -1e30]
+            local found = false
+            for n in pkgNodes where isValidNode n do
+            (
+                local nmn = n.min
+                local nmx = n.max
+                if nmn.x < mn.x then mn.x = nmn.x
+                if nmn.y < mn.y then mn.y = nmn.y
+                if nmn.z < mn.z then mn.z = nmn.z
+                if nmx.x > mx.x then mx.x = nmx.x
+                if nmx.y > mx.y then mx.y = nmx.y
+                if nmx.z > mx.z then mx.z = nmx.z
+                found = true
+            )
+
+            if found then
+            (
+                local camNode = newNodes[1]
+                local tgtNode = newNodes[2]
+
+                local pkgW = mx.x - mn.x
+                local pkgD = mx.y - mn.y
+                local pkgH = mx.z - mn.z
+                local pkgCenterX = (mn.x + mx.x) / 2.0
+                local pkgCenterY = (mn.y + mx.y) / 2.0
+                local tgtZ = (mn.z + mx.z) / 2.0
+
+                local camZ = 100.0 + (kitCount as float) * 20.0
+
+                local fitDim = if pkgW > pkgH then pkgW else pkgH
+
+                local fitPct = 80
+                try (fitPct = spnCamFit.value) catch()
+                if fitPct == undefined or fitPct < 50 then fitPct = 50
+                if fitPct > 100 then fitPct = 100
+                local marginFactor = 100.0 / (fitPct as float)
+
+                local hFOV = cameraHFOVDeg camNode
+                local halfFOV = hFOV / 2.0
+                local tanHalf = tan halfFOV
+                local autoBase = 500.0
+                if tanHalf > 0.0001 then
+                    autoBase = (fitDim / 2.0) / tanHalf
+                local autoDist = (autoBase + pkgD / 2.0) * marginFactor
+
+                local templateDist = 0.0
+                try
+                (
+                    if pickedCamera.target != undefined and isValidNode pickedCamera.target then
+                    (
+                        local tDiff = pickedCamera.pos - pickedCamera.target.pos
+                        templateDist = length tDiff
+                    )
+                )
+                catch()
+                local scaledTemplate = templateDist * marginFactor
+
+                local mode = "AUTO+CAP"
+                try (mode = ddlCamMode.selected) catch()
+                local distance = autoDist
+                if mode == "RATIO" then
+                (
+                    local ratio = 2.67
+                    try (ratio = spnCamRatio.value) catch()
+                    distance = pkgW * ratio
+                )
+                else if mode == "TEMPLATE" and templateDist > 0 then
+                    distance = scaledTemplate
+                else if mode == "AUTO+CAP" and templateDist > 0 then
+                    distance = if scaledTemplate < autoDist then scaledTemplate else autoDist
+
+                try (camNode.pos = [pkgCenterX, pkgCenterY - distance, camZ]) catch()
+                try (tgtNode.pos = [pkgCenterX, pkgCenterY, tgtZ]) catch()
+            )
+        )
+
+        newNodes
     )
 
     fn buildSweep entry pairs missingOut =
@@ -412,9 +546,9 @@ rollout sweepRollout "Sweep Script" width:560 height:600
         local roots = #()
         for num in entry.nums do
         (
-            local src = lookupObj pairs num entry.variant
+            local src = lookupObj pairs num
             if src == undefined or not isValidNode src then
-                appendIfUnique missingOut (num + " [" + entry.variant + "]")
+                appendIfUnique missingOut num
             else
             (
                 local newNodes = #()
@@ -433,7 +567,7 @@ rollout sweepRollout "Sweep Script" width:560 height:600
         )
         if roots.count == 0 then return 0
 
-        -- Lay the pieces out along +X, touching, in name order.
+        -- Lay the pieces out along +X, touching, backs on one line.
         local cursor = 0.0
         for r in roots do cursor = placeAdjacentX r cursor
 
@@ -453,6 +587,9 @@ rollout sweepRollout "Sweep Script" width:560 height:600
         for n in createdAll where isValidNode n do
             try (layer.addNode n) catch()
         if grp != undefined then try (layer.addNode grp) catch()
+
+        -- Clone a framed copy of the template camera into this layer.
+        cloneCameraToLayer layer entry.fullName createdAll roots.count
 
         createdAll.count
     )
@@ -474,6 +611,12 @@ rollout sweepRollout "Sweep Script" width:560 height:600
         (
             setINISetting p "main" "Series"    edtSeries.text
             setINISetting p "main" "ExcelPath" edtExcel.text
+            setINISetting p "main" "CamFitPct" (spnCamFit.value as string)
+            setINISetting p "main" "CamMode"   ddlCamMode.selected
+            setINISetting p "main" "CamRatio"  (spnCamRatio.value as string)
+            local camName = ""
+            if pickedCamera != undefined and isValidNode pickedCamera then camName = pickedCamera.name
+            setINISetting p "main" "CameraName" camName
 
             local rowCount = dgvKits.RowCount
             try
@@ -512,6 +655,28 @@ rollout sweepRollout "Sweep Script" width:560 height:600
             if s != "" then edtSeries.text = s
             local e = getINISetting p "main" "ExcelPath"
             if e != "" then edtExcel.text = e
+
+            local cf = getINISetting p "main" "CamFitPct"
+            if cf != "" then try (spnCamFit.value = (cf as integer)) catch()
+
+            local camModeItems = #("AUTO+CAP","AUTO","TEMPLATE","RATIO")
+            local cmod = getINISetting p "main" "CamMode"
+            local cmodIdx = findItem camModeItems cmod
+            if cmodIdx > 0 then ddlCamMode.selection = cmodIdx
+
+            local cr = getINISetting p "main" "CamRatio"
+            if cr != "" then try (spnCamRatio.value = (cr as float)) catch()
+
+            local cn = getINISetting p "main" "CameraName"
+            if cn != "" then
+            (
+                local n = getNodeByName cn
+                if n != undefined and isValidNode n then
+                (
+                    pickedCamera = n
+                    lblPickedCam.text = "Camera: " + n.name
+                )
+            )
 
             local cs = getINISetting p "map" "Count"
             local count = 0
@@ -578,9 +743,11 @@ rollout sweepRollout "Sweep Script" width:560 height:600
             msg += "\nSkipped " + skippedCount as string + " (no mapped objects matched)."
         if missing.count > 0 then
         (
-            msg += "\n\nUnmapped Model # [Variant]:"
+            msg += "\n\nUnmapped Model #:"
             for m in missing do msg += "\n  - " + m
         )
+        if pickedCamera == undefined then
+            msg += "\n\nNote: No template camera was picked, so no cameras were added to layers."
         messageBox msg title:"Run Complete"
     )
 
@@ -603,14 +770,14 @@ rollout sweepRollout "Sweep Script" width:560 height:600
 
         local colVar = dotNetObject "System.Windows.Forms.DataGridViewComboBoxColumn"
         colVar.HeaderText = "VARIANT"
-        colVar.FillWeight = 28
-        local varOptions = #("DEFAULT", "CLSD", "OPEN", "CONTROL")
+        colVar.FillWeight = 32
+        local varOptions = #("SINGLE SEATER", "DOUBLE SEATER", "ARM CHAIR", "SIDE SOFA", "OTTOMAN")
         for s in varOptions do colVar.Items.Add s
         dgvKits.Columns.Add colVar
 
         local colObj = dotNetObject "System.Windows.Forms.DataGridViewComboBoxColumn"
         colObj.HeaderText = "SELECT OBJECT"
-        colObj.FillWeight = 50
+        colObj.FillWeight = 46
         dgvKits.Columns.Add colObj
 
         local names = collectSceneObjectNames()
@@ -694,6 +861,17 @@ rollout sweepRollout "Sweep Script" width:560 height:600
         if fp != undefined then
         (
             edtExcel.text = fp
+            saveSettings()
+        )
+    )
+
+    on btnPickCam pressed do
+    (
+        local pick = pickObject message:"Pick a VRayPhysicalCamera (its target will be copied too)"
+        if pick != undefined and isValidNode pick then
+        (
+            pickedCamera = pick
+            lblPickedCam.text = "Camera: " + pick.name
             saveSettings()
         )
     )

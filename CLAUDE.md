@@ -107,16 +107,18 @@ A separate, simpler automation built from the pkg patterns. Reuses the same prov
 
 ## What it does (one line)
 Reads an Excel column of full names, and for each name clones the mapped model(s), lays them
-out along +X touching (no gap) in name order, groups them, and rotates the whole group on Z by
-an angle implied by the name's view-type. Each name → its own hidden layer + group.
+out along +X touching (no gap) in name order with all BACK edges on one line, groups them,
+rotates the whole group on Z by an angle implied by the name's view-type, and clones a framed
+template camera into the layer. Each name → its own hidden layer + group + camera.
 
 ## Name format
 `SERIES - MODEL(s) - VIEWTYPE - [SW] - AGR`, e.g. `87214-10-17-08-ANGLE-CLSD-SW-AGR`.
 - `87214` = series (stripped via the SERIES NAME field).
 - `10-17-08` = one or more numeric model tokens, mapped to scene objects in the grid.
-- `ANGLE-CLSD` = view-type (+ optional CLSD/OPEN/CONTROL variant).
+- `ANGLE-CLSD` = view-type. Extra words (CLSD/OPEN/CONTROL) only affect rotation via the base
+  keyword — they are NOT used for object lookup anymore.
 - `SW`, `AGR` = ignored suffix tokens. Some rows are just `-AGR` (no `SW`) — handled.
-- Parsing: `parseSweepName` (struct `SweepName(fullName, nums, variant, rot, viewStr)`).
+- Parsing: `parseSweepName` (struct `SweepName(fullName, nums, rot, viewStr)`).
 
 ## Rotation table (whole-group Z, by base keyword — test BACK-ANGLE before ANGLE)
 | View type | Z rot |
@@ -129,23 +131,26 @@ an angle implied by the name's view-type. Each name → its own hidden layer + g
 
 ## Decisions baked in (confirmed with user 2026-06-17)
 - **Input** = Excel file of names (not manual entry).
-- **Mapping grid** keys on `(MODEL #, VARIANT)` → scene object. Columns: MODEL # / VARIANT
-  (DEFAULT/CLSD/OPEN/CONTROL) / SELECT OBJECT. `buildLookup` → `lookupObj` with **DEFAULT
-  fallback** when a requested variant isn't mapped for that number.
-- **CLSD/OPEN/CONTROL are separate scene objects** (open vs closed geometry), mapped per variant.
+- **Mapping grid** = MODEL # → ONE scene object. Lookup is by MODEL # only (`lookupObj`).
+  Columns: MODEL # / VARIANT / SELECT OBJECT. **VARIANT is a descriptive seating-type label
+  only** (SINGLE SEATER / DOUBLE SEATER / ARM CHAIR / SIDE SOFA / OTTOMAN) — it does NOT affect
+  which object is cloned.
 - **Arrangement** = world +X, name order, bounding boxes touching, zero gap (`placeAdjacentX`).
-  Models keep their own orientation; only the final group is rotated (`about ctr rotate ... Z`).
-- No FRONT-AXIS handling and **no camera cloning** (intentionally omitted; pkg has them, sweep doesn't).
+  Each piece's BACK edge (+Y / bbox max.y) is aligned to a common line (Y=0); pieces extend
+  toward −Y (front). Models keep their own orientation; only the final group is rotated
+  (`about ctr rotate ... Z`).
+- **Camera** = inline `PICK VRAY CAMERA` button + CAM FIT %/MODE/RATIO options. A framed copy
+  of the template camera+target is cloned into EVERY created layer (`cloneCameraToLayer`,
+  ported from pkg; cam X locked to the package centre). Cam Z = `100 + modelCount*20`.
 
 ## Key functions
-`parseSweepName` (name→struct), `buildLookup`/`lookupObj` (mapping + fallback), `numEqual`
-(08 vs 8), `isAllDigits` (model-token detection), `placeAdjacentX` (touching X layout),
-`buildSweep` (clone→arrange→group→rotate→layer), `executePending`, settings under
-`settings\sweep_script_settings.ini`.
+`parseSweepName` (name→struct), `buildLookup`/`lookupObj` (MODEL #→object), `numEqual`
+(08 vs 8), `isAllDigits` (model-token detection), `placeAdjacentX` (touching X layout +
+back-edge alignment), `buildSweep` (clone→arrange→group→rotate→layer→camera), `cloneCameraToLayer`,
+`cameraHFOVDeg`, `executePending`, settings under `settings\sweep_script_settings.ini`.
 
 ## Open assumptions to verify with user if issues arise
-- Variant applies per-model-number with DEFAULT fallback (so multi-model names mix variant +
-  default objects). If a name's variant should force ALL its models to that variant only, revisit.
-- Rotation is about the assembled group's bbox center. If the user wants rotation about world
-  origin or a specific pivot, change the `about ctr` center in `buildSweep`.
-- Touching means world-axis bbox edges meet along X with each model at its current orientation.
+- Rotation is about the assembled group's bbox center. If rotation should be about world origin
+  or a specific pivot, change the `about ctr` center in `buildSweep`.
+- Back-edge = world-axis bbox max.y of each model at its current orientation. If a model's
+  geometric "back" isn't its +Y bbox side, its orientation must be fixed in the scene first.
