@@ -115,8 +115,15 @@ template camera into the layer. Each name → its own hidden layer + group + cam
 `SERIES - MODEL(s) - VIEWTYPE - [SW] - AGR`, e.g. `87214-10-17-08-ANGLE-CLSD-SW-AGR`.
 - `87214` = series (stripped via the SERIES NAME field).
 - `10-17-08` = one or more numeric model tokens, mapped to scene objects in the grid.
-- `ANGLE-CLSD` = view-type. Extra words (CLSD/OPEN/CONTROL) only affect rotation via the base
-  keyword — they are NOT used for object lookup anymore.
+- `ANGLE-CLSD` = view-type. The base keyword drives rotation (see table). `CONTROL` is inert.
+- **`OPEN` / `CLSD` words DO drive model selection (added 2026-06-18).** If the name's view words
+  contain `OPEN`, each model token `N` is looked up as `N_OPEN` first (e.g. `25` → `25_OPEN`),
+  falling back to plain `N` if no `N_OPEN` row is mapped; `CLSD`/`CLOSED` → `N_CLSD` likewise.
+  No `OPEN`/`CLSD` word → plain `N`. So `87214-25-SIDE-OPEN-SW-AGR` clones the `25_OPEN` grid row
+  (whose VARIANT is typically `SINGLE RECLINER OPEN`), while `87214-25-SIDE-SW-AGR` clones `25`.
+  The word does NOT change rotation. Implemented as `modSuffix` in `buildSweep`; relies on the
+  tightened `numEqual` (numeric compare only when both tokens are pure digits, so `25` never
+  matches a `25_OPEN` row and vice-versa).
 - `SW`, `AGR` = ignored suffix tokens. Some rows are just `-AGR` (no `SW`) — handled.
 - Parsing: `parseSweepName` (struct `SweepName(fullName, nums, rot, viewStr)`).
 
@@ -131,11 +138,14 @@ template camera into the layer. Each name → its own hidden layer + group + cam
 
 ## Decisions baked in (confirmed with user 2026-06-17)
 - **Input** = Excel file of names (not manual entry).
-- **Mapping grid** = MODEL # → ONE scene object. Lookup is by MODEL # only (`lookupObj`).
-  Columns: MODEL # / VARIANT / SELECT OBJECT. **VARIANT is a descriptive seating-type label
-  only** (DEFAULT / SINGLE SEATER / DOUBLE SEATER / LOVE SEAT / ARM CHAIR / LEFT SIDE SOFA /
-  RIGHT SIDE SOFA / OTTOMAN) — it does NOT affect which object is cloned (but LEFT/RIGHT SIDE
-  SOFA drive ordering + rotation overrides; see below).
+- **Mapping grid** = MODEL # → ONE scene object. Lookup is by MODEL # only (`lookupPair`).
+  Columns: MODEL # / VARIANT / SELECT OBJECT. (An auto-derive-MODEL#-from-object-name variant
+  was prototyped and reverted 2026-06-18 — the manual MODEL # column is intentional because the
+  open/closed suffix cases, e.g. `8721425_OPEN`, made auto-derivation ambiguous.) **VARIANT is a
+  descriptive seating-type label only** (DEFAULT / SINGLE SEATER / DOUBLE SEATER / LOVE SEAT /
+  ARM CHAIR / SINGLE RECLINER OPEN / SINGLE RECLINER CLSD / LEFT SIDE SOFA / RIGHT SIDE SOFA /
+  OTTOMAN) — it does NOT affect which object is cloned (but LEFT/RIGHT SIDE SOFA drive ordering +
+  rotation overrides, and it drives camera height; see below).
 - **Arrangement** = world +X, name order, bounding boxes touching, zero gap (`placeAdjacentX`).
   Each piece's BACK edge (+Y / bbox max.y) is aligned to a common line (Y=0); pieces extend
   toward −Y (front). Models keep their own orientation; only the final group is rotated
@@ -151,15 +161,41 @@ template camera into the layer. Each name → its own hidden layer + group + cam
     `87214-66-17-ANGLE` where 17 = RIGHT SIDE SOFA → +55°.
 - **Camera** = inline `PICK VRAY CAMERA` button only (CAM FIT/MODE/RATIO controls removed). A
   copy of the template camera+target is cloned into EVERY created layer (`cloneCameraToLayer`).
-  Placement: **target at world X=0, Y=0** (Z = object's vertical mid); **camera distance
-  B = A / 0.3** where A = object width (X extent), camera pulled straight back on −Y to
-  `[0, -B, camZ]`. Cam Z = `100 + modelCount*20`.
+  Placement: **target at world X=0, Y=0**; **camera distance B = A / 0.33** where A = object
+  width (X extent), camera pulled straight back on −Y to `[0, -B, camZ]`. **Camera Z and target
+  Z are fixed per variant** (`variantCameraHeights`, in cm): OTTOMAN `45/23`; SINGLE SEATER /
+  ARM CHAIR / LOVE SEAT / SINGLE RECLINER OPEN / SINGLE RECLINER CLSD `78/41`; everything else
+  incl. DEFAULT / DOUBLE SEATER / LEFT-RIGHT SIDE SOFA `107/43` (recliner height = single-seat,
+  set 2026-06-18 pending confirmation). The arrangement's height is taken from the **FIRST model's variant**
+  (`rootVars[1]`).
+
+- **Settings INI (added 2026-06-18)** = under the Excel row, **SAVE INI FILE** + **LOAD INI
+  FILE** buttons. Default auto-save is still `settings\sweep_script_settings.ini`. SAVE picks a
+  custom path that becomes `activeIniPath` — the active settings file all further auto-saves
+  (close / RUN / add-delete row) write to. LOAD reads a chosen `.ini` back into the UI and makes
+  it active. Persistence: a pointer `[main] ActiveIniPath` written into the **default** ini lets
+  `bootstrapActiveIni` resume from the user's chosen file after a Max restart. Path resolution:
+  `getDefaultSettingsPath` (script-dir default) vs `getSettingsPath` (active if set, else default).
+
+- **SERIES NAME is a dotNet TextBox, not a MaxScript `edittext` (changed 2026-06-18).** A plain
+  `edittext` lost its typed buffer on Enter because the dotNet-hosted dialog swallowed the key as
+  a default-button "accept" before the field committed (clearing `87214` etc.). Fix: `edtSeries`
+  is `dotNetControl "...TextBox"` with a `KeyDown` handler (`seriesKeyDown`) that on Enter sets
+  `SuppressKeyPress/Handled`, calls `saveSettings`, and moves focus to REFRESH — same swallow path
+  the grid uses (`editorKeyDown`). `frm.AcceptButton = undefined` on open also defangs the accept.
+
+- **Combo cells ignore the mouse wheel (added 2026-06-18).** `EditingControlShowing` attaches
+  `comboMouseWheel` (sets `HandledMouseEventArgs.Handled = true`) to the VARIANT / SELECT OBJECT
+  edit control so an accidental hover-scroll never changes the selected option. The grid itself
+  still scrolls normally when no cell is being edited (the handler lives only on the edit control).
 
 ## Key functions
-`parseSweepName` (name→struct), `buildLookup`/`lookupObj` (MODEL #→object), `numEqual`
-(08 vs 8), `isAllDigits` (model-token detection), `placeAdjacentX` (touching X layout +
-back-edge alignment), `buildSweep` (clone→arrange→group→rotate→layer→camera), `cloneCameraToLayer`,
-`cameraHFOVDeg`, `executePending`, settings under `settings\sweep_script_settings.ini`.
+`parseSweepName` (name→struct), `buildLookup`/`lookupPair` (MODEL #→object+variant), `numEqual`
+(08 vs 8), `isAllDigits` (model-token detection), `placeAdjacentX` (touching X layout + back-edge
+alignment), `buildSweep` (clone→arrange→group→rotate→layer→camera), `cloneCameraToLayer`,
+`cameraHFOVDeg`, `executePending`. Settings path: `getDefaultSettingsPath` / `getSettingsPath` /
+`bootstrapActiveIni`; default file `settings\sweep_script_settings.ini`, optional user-chosen
+file via SAVE/LOAD INI.
 
 ## Open assumptions to verify with user if issues arise
 - Rotation is about the assembled group's bbox center. If rotation should be about world origin

@@ -41,6 +41,12 @@ Model -> object map:
     The VARIANT column is a descriptive seating-type tag only
     (Single Seater / Double Seater / Arm Chair / Side Sofa / Ottoman).
 
+Settings INI:
+    Settings auto-save to settings\sweep_script_settings.ini by default.
+    SAVE INI FILE picks a custom location that becomes the active settings file
+    (all further auto-saves go there, and the choice survives a Max restart).
+    LOAD INI FILE loads settings from a chosen .ini back into the UI.
+
 Camera:
     Click "PICK VRAY CAMERA" and pick a template camera. A framed copy of
     that camera (+ its target) is cloned into EVERY package layer.
@@ -49,8 +55,9 @@ Workflow:
     1. Enter SERIES NAME (e.g. 87214).
     2. Map each MODEL # to a scene object (tag its seating type in VARIANT).
     3. Browse to the Excel file (one full name per row).
-    4. Optional: PICK VRAY CAMERA (a framed copy is cloned into every layer).
-    5. Click RUN -> preview lists every arrangement -> RUN to confirm.
+    4. Optional: SAVE/LOAD INI to keep mappings in a chosen file.
+    5. Optional: PICK VRAY CAMERA (a framed copy is cloned into every layer).
+    6. Click RUN -> preview lists every arrangement -> RUN to confirm.
 */
 
 struct SweepName (fullName, nums, rot, viewStr)
@@ -86,18 +93,19 @@ rollout sweepPreviewDlg "Confirm Sweeps" width:460 height:530
     on btnCancel pressed do destroyDialog sweepPreviewDlg
 )
 
-rollout sweepRollout "Sweep Script" width:560 height:620
+rollout sweepRollout "Sweep Script" width:560 height:690
 (
     local noneTag        = "(none)"
     local pendingSeries  = ""
     local pendingPairs   = #()
     local pendingEntries = #()
     local pickedCamera   = undefined
+    local activeIniPath  = ""   -- user-chosen settings file (empty = default)
 
     label lblTitle "SWEEP SCRIPT" pos:[210,12] width:200 height:18
 
-    label    lblSeries "SERIES NAME" pos:[20,44]  width:110
-    edittext edtSeries ""            pos:[140,41] width:400 height:22
+    label         lblSeries "SERIES NAME"                          pos:[20,44]  width:110
+    dotNetControl edtSeries "System.Windows.Forms.TextBox"         pos:[140,41] width:400 height:22
 
     label  lblMapHeader "MODEL -> OBJECT MAP"   pos:[20,74]  width:160
     button btnRefresh   "REFRESH SCENE OBJECTS" pos:[360,70] width:180 height:24
@@ -111,12 +119,18 @@ rollout sweepRollout "Sweep Script" width:560 height:620
     edittext edtExcel  ""           pos:[125,452] width:320 height:22 readonly:true
     button   btnBrowse "..."        pos:[450,452] width:90  height:22
 
-    -- ---- Camera section (inline) -----------------------------------
-    label  lblCamHeader "CAMERA"             pos:[20,486]  width:100
-    button btnPickCam   "PICK VRAY CAMERA"   pos:[20,506]  width:160 height:30
-    label  lblPickedCam "(no camera picked)" pos:[190,513] width:350 height:18
+    -- ---- Settings INI section --------------------------------------
+    label  lblIniHdr  "SETTINGS INI"   pos:[20,488]  width:100
+    button btnSaveIni "SAVE INI FILE"  pos:[125,485] width:155 height:24
+    button btnLoadIni "LOAD INI FILE"  pos:[290,485] width:155 height:24
+    label  lblIniPath "INI: (default)" pos:[20,512]  width:520 height:16
 
-    button btnRun "RUN" pos:[20,550] width:520 height:34
+    -- ---- Camera section (inline) -----------------------------------
+    label  lblCamHeader "CAMERA"             pos:[20,540]  width:100
+    button btnPickCam   "PICK VRAY CAMERA"   pos:[20,560]  width:160 height:30
+    label  lblPickedCam "(no camera picked)" pos:[190,567] width:350 height:18
+
+    button btnRun "RUN" pos:[20,610] width:520 height:34
 
     fn trimAll s = trimLeft (trimRight s)
 
@@ -132,14 +146,23 @@ rollout sweepRollout "Sweep Script" width:560 height:620
         ok
     )
 
+    -- Match model tokens. Case-insensitive exact match handles suffixed tokens
+    -- like "25_OPEN"; numeric match (only when BOTH are pure digits) handles
+    -- "08" vs "8". A plain number therefore never matches a "_OPEN"/"_CLSD" row.
     fn numEqual a b =
     (
-        if a == b then return true
-        local ia = undefined
-        local ib = undefined
-        try (ia = a as integer) catch()
-        try (ib = b as integer) catch()
-        (ia != undefined and ib != undefined and ia == ib)
+        local ta = trimAll a
+        local tb = trimAll b
+        if (toUpper ta) == (toUpper tb) then return true
+        if (isAllDigits ta) and (isAllDigits tb) then
+        (
+            local ia = undefined
+            local ib = undefined
+            try (ia = ta as integer) catch()
+            try (ib = tb as integer) catch()
+            return (ia != undefined and ib != undefined and ia == ib)
+        )
+        false
     )
 
     fn collectSceneObjectNames =
@@ -411,10 +434,27 @@ rollout sweepRollout "Sweep Script" width:560 height:620
         cursorX + w
     )
 
+    -- Camera Z (height) and target Z by variant, in cm/scene units:
+    --   #(cameraZ, targetZ). Anything not listed (DEFAULT, DOUBLE SEATER,
+    --   LEFT/RIGHT SIDE SOFA, ...) uses the DEFAULT pair.
+    fn variantCameraHeights v =
+    (
+        case (trimAll (toUpper v)) of
+        (
+            "OTTOMAN":              #(45.0,  23.0)
+            "SINGLE SEATER":        #(78.0,  41.0)
+            "ARM CHAIR":            #(78.0,  41.0)
+            "LOVE SEAT":            #(78.0,  41.0)
+            "SINGLE RECLINER OPEN": #(78.0,  41.0)
+            "SINGLE RECLINER CLSD": #(78.0,  41.0)
+            default:                #(107.0, 43.0)
+        )
+    )
+
     -- Clone the picked template camera + target into `layer`, rename after
     -- the package, and position to frame the arrangement (camera X locked
-    -- to the package centre so it stays centred in frame).
-    fn cloneCameraToLayer layer pkgName pkgNodes kitCount =
+    -- to the package centre). camZ / tgtZ are the variant-driven heights.
+    fn cloneCameraToLayer layer pkgName pkgNodes camZ tgtZ =
     (
         if pickedCamera == undefined or not isValidNode pickedCamera then return undefined
         local sources = #(pickedCamera)
@@ -457,12 +497,10 @@ rollout sweepRollout "Sweep Script" width:560 height:620
                 local tgtNode = newNodes[2]
 
                 local pkgW = mx.x - mn.x          -- A: object width, end to end (X).
-                local tgtZ = (mn.z + mx.z) / 2.0  -- target vertical mid of the object.
-                local camZ = 100.0 + (kitCount as float) * 20.0
 
-                -- Width : (target -> camera) distance ratio  A / B = 0.3,
-                -- so B = A / 0.3. Camera is pulled back along -Y by B.
-                local widthRatio = 0.3
+                -- Width : (target -> camera) distance ratio  A / B = 0.33,
+                -- so B = A / 0.33. Camera is pulled back along -Y by B.
+                local widthRatio = 0.33
                 local camDist = if widthRatio > 0.0001 then (pkgW / widthRatio) else pkgW
 
                 -- Target on the world X,Y origin; camera straight back on -Y.
@@ -481,9 +519,19 @@ rollout sweepRollout "Sweep Script" width:560 height:620
         local rootVars = #()
         local hasLeftSofa = false
         local hasRightSofa = false
+
+        -- An OPEN / CLSD word in the name selects a suffixed MODEL # (e.g. 25 ->
+        -- 25_OPEN) when such a row is mapped; otherwise it falls back to the
+        -- plain number. The word does not change the rotation.
+        local modSuffix = ""
+        if (matchPattern entry.viewStr pattern:"*OPEN*") then modSuffix = "_OPEN"
+        else if (matchPattern entry.viewStr pattern:"*CLSD*") or (matchPattern entry.viewStr pattern:"*CLOSED*") then modSuffix = "_CLSD"
+
         for num in entry.nums do
         (
-            local pr = lookupPair pairs num
+            local pr = undefined
+            if modSuffix != "" then pr = lookupPair pairs (num + modSuffix)
+            if pr == undefined then pr = lookupPair pairs num
             if pr == undefined or not isValidNode pr[1] then
                 appendIfUnique missingOut num
             else
@@ -556,13 +604,18 @@ rollout sweepRollout "Sweep Script" width:560 height:620
             try (layer.addNode n) catch()
         if grp != undefined then try (layer.addNode grp) catch()
 
-        -- Clone a framed copy of the template camera into this layer.
-        cloneCameraToLayer layer entry.fullName createdAll roots.count
+        -- Clone a framed copy of the template camera into this layer. Camera
+        -- and target heights come from the FIRST model's variant.
+        local chosenVar = if rootVars.count > 0 then rootVars[1] else "DEFAULT"
+        local camH = variantCameraHeights chosenVar
+        cloneCameraToLayer layer entry.fullName createdAll camH[1] camH[2]
 
         createdAll.count
     )
 
-    fn getSettingsPath =
+    -- The built-in default settings file next to the script. It also stores a
+    -- pointer ("ActiveIniPath") to the user-chosen file, if any.
+    fn getDefaultSettingsPath =
     (
         local scriptDir = ""
         try ( scriptDir = getFilenamePath (getThisScriptFilename()) ) catch()
@@ -570,6 +623,26 @@ rollout sweepRollout "Sweep Script" width:560 height:620
         local settingsDir = scriptDir + "settings\\"
         try ( makeDir settingsDir all:true ) catch()
         settingsDir + "sweep_script_settings.ini"
+    )
+
+    -- The file that settings are actually read from / auto-saved to: the
+    -- user-chosen INI when one is set, otherwise the default.
+    fn getSettingsPath =
+    (
+        if activeIniPath != "" then activeIniPath
+        else getDefaultSettingsPath()
+    )
+
+    -- On open, resume from the last user-chosen INI (if it still exists).
+    fn bootstrapActiveIni =
+    (
+        local dp = getDefaultSettingsPath()
+        if doesFileExist dp then
+        (
+            local ap = ""
+            try ( ap = getINISetting dp "main" "ActiveIniPath" ) catch()
+            if ap != "" and doesFileExist ap then activeIniPath = ap
+        )
     )
 
     fn saveSettings =
@@ -607,6 +680,9 @@ rollout sweepRollout "Sweep Script" width:560 height:620
             )
         )
         catch()
+        -- Remember which file is the active settings file so auto-save/auto-load
+        -- resumes from the user-chosen location after Max is restarted.
+        try ( setINISetting (getDefaultSettingsPath()) "main" "ActiveIniPath" activeIniPath ) catch()
         OK
     )
 
@@ -670,6 +746,31 @@ rollout sweepRollout "Sweep Script" width:560 height:620
         )
     )
 
+    -- Swallow the mouse wheel while a combo cell is being edited so an
+    -- accidental scroll over the dropdown never changes the selected option.
+    -- The wheel args are HandledMouseEventArgs; Handled=true blocks the
+    -- default "cycle items" behaviour (the grid still scrolls normally when no
+    -- cell is in edit mode, since this handler only lives on the edit control).
+    fn comboMouseWheel s e =
+    (
+        try (e.Handled = true) catch()
+    )
+
+    -- Enter in SERIES NAME: swallow the key (so the typed text is kept, not
+    -- discarded by the host dialog), save, and move focus off the field.
+    fn seriesKeyDown s e =
+    (
+        local kv = 0
+        try (kv = e.KeyValue) catch()
+        if kv == 13 then
+        (
+            try (e.SuppressKeyPress = true) catch()
+            try (e.Handled = true) catch()
+            saveSettings()
+            try (setFocus btnRefresh) catch()
+        )
+    )
+
     fn getPendingEntries = pendingEntries
 
     fn executePending =
@@ -725,7 +826,7 @@ rollout sweepRollout "Sweep Script" width:560 height:620
         local colVar = dotNetObject "System.Windows.Forms.DataGridViewComboBoxColumn"
         colVar.HeaderText = "VARIANT"
         colVar.FillWeight = 32
-        local varOptions = #("DEFAULT", "SINGLE SEATER", "DOUBLE SEATER", "LOVE SEAT", "ARM CHAIR", "LEFT SIDE SOFA", "RIGHT SIDE SOFA", "OTTOMAN")
+        local varOptions = #("DEFAULT", "SINGLE SEATER", "DOUBLE SEATER", "LOVE SEAT", "ARM CHAIR", "SINGLE RECLINER OPEN", "SINGLE RECLINER CLSD", "LEFT SIDE SOFA", "RIGHT SIDE SOFA", "OTTOMAN")
         for s in varOptions do colVar.Items.Add s
         dgvKits.Columns.Add colVar
 
@@ -757,7 +858,25 @@ rollout sweepRollout "Sweep Script" width:560 height:620
         btnAddKit.FlatStyle = flatStyle
         btnAddKit.Font      = boldFont
 
+        -- SERIES NAME is a dotNet TextBox; its Enter key is routed through the
+        -- 'on edtSeries KeyDown' handler below (same swallow-the-key path the
+        -- grid uses) so the typed text is never discarded.
+        try (edtSeries.Font = boldFont) catch()
+
+        bootstrapActiveIni()
         loadSettings()
+        if activeIniPath != "" then lblIniPath.text = "INI: " + activeIniPath
+
+        -- The host dialog otherwise treats Enter as a default-button "accept",
+        -- which swallows the keystroke before a typed edittext (e.g. SERIES
+        -- NAME) commits, clearing what was typed. Clear it so Enter reaches the
+        -- field and its 'entered' handler runs instead.
+        try
+        (
+            local frm = dgvKits.FindForm()
+            if frm != undefined then frm.AcceptButton = undefined
+        )
+        catch()
     )
 
     on sweepRollout close do saveSettings()
@@ -769,7 +888,11 @@ rollout sweepRollout "Sweep Script" width:560 height:620
         local ctrl = e.Control
         try (dotNet.removeAllEventHandlers ctrl "KeyDown") catch()
         dotNet.addEventHandler ctrl "KeyDown" editorKeyDown
+        try (dotNet.removeAllEventHandlers ctrl "MouseWheel") catch()
+        dotNet.addEventHandler ctrl "MouseWheel" comboMouseWheel
     )
+
+    on edtSeries KeyDown s e do seriesKeyDown s e
 
     on btnRefresh pressed do refreshSceneObjects()
 
@@ -816,6 +939,40 @@ rollout sweepRollout "Sweep Script" width:560 height:620
         (
             edtExcel.text = fp
             saveSettings()
+        )
+    )
+
+    on btnSaveIni pressed do
+    (
+        local startName = activeIniPath
+        if startName == "" then startName = getDefaultSettingsPath()
+        local fp = getSaveFileName caption:"Save settings INI as" \
+            filename:startName \
+            types:"INI Files (*.ini)|*.ini|All Files (*.*)|*.*|"
+        if fp != undefined then
+        (
+            if (toLower (getFilenameType fp)) != ".ini" then fp += ".ini"
+            activeIniPath = fp
+            try (dgvKits.EndEdit()) catch()
+            saveSettings()              -- writes full settings here + updates the pointer
+            lblIniPath.text = "INI: " + fp
+        )
+    )
+
+    on btnLoadIni pressed do
+    (
+        local startName = activeIniPath
+        if startName == "" then startName = getDefaultSettingsPath()
+        local fp = getOpenFileName caption:"Load settings INI" \
+            filename:startName \
+            types:"INI Files (*.ini)|*.ini|All Files (*.*)|*.*|"
+        if fp != undefined and doesFileExist fp then
+        (
+            activeIniPath = fp
+            loadSettings()
+            -- Persist the pointer so future auto-saves go to this file too.
+            try ( setINISetting (getDefaultSettingsPath()) "main" "ActiveIniPath" activeIniPath ) catch()
+            lblIniPath.text = "INI: " + fp
         )
     )
 
