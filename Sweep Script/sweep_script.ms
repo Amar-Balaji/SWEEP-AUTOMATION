@@ -84,7 +84,10 @@ rollout sweepPreviewDlg "Confirm Sweeps" width:460 height:530
         (
             local nc = e.nums.count
             local suffix = if nc == 1 then " model" else " models"
-            local rotTxt = if e.rot == 0.0 then "no rot" else (e.rot as string + " deg")
+            -- Show the REAL rotation (variant + CSV ROT), not just the
+            -- name-based default, so the preview matches what gets built.
+            local realRot = sweepRollout.rotForEntry e
+            local rotTxt = if realRot == 0.0 then "no rot" else (realRot as string + " deg")
             append items (e.fullName + "   (" + nc as string + suffix + ", " + rotTxt + ")")
         )
         lstNames.items = items
@@ -151,6 +154,31 @@ rollout sweepRollout "Sweep Script" width:560 height:690
             if c < "0" or c > "9" then ( ok = false ; exit )
         )
         ok
+    )
+
+    -- Parse a model token into #(baseNumStr, qty). Accepts a plain number
+    -- ("46" -> #("46",1)) or the bracketed quantity form "46(2)" -> #("46",2),
+    -- meaning that same kit/object appears 2x. Returns undefined if the token
+    -- is not a model number (so parseSweepName treats it as a view word).
+    fn parseModelToken s =
+    (
+        local t = trimAll s
+        if t == "" then return undefined
+        local lp = findString t "("
+        if lp == undefined then
+        (
+            if isAllDigits t then return #(t, 1) else return undefined
+        )
+        local base = trimAll (substring t 1 (lp - 1))
+        if not (isAllDigits base) then return undefined
+        local rest = substring t (lp + 1) -1
+        local rp = findString rest ")"
+        if rp == undefined then return undefined
+        local qstr = trimAll (substring rest 1 (rp - 1))
+        if not (isAllDigits qstr) then return undefined
+        local q = qstr as integer
+        if q < 1 then q = 1
+        #(base, q)
     )
 
     -- Match model tokens. Case-insensitive exact match handles suffixed tokens
@@ -261,12 +289,16 @@ rollout sweepRollout "Sweep Script" width:560 height:690
             else return undefined
         )
 
-        -- Leading all-digit tokens are model numbers; the rest is viewtype.
+        -- Leading model tokens are model numbers; the rest is viewtype. A token
+        -- may carry a bracketed quantity ("46(2)" = model 46 twice), which is
+        -- expanded into repeated entries so it clones/lays out that many times.
         local nums = #()
-        while parts.count > 0 and (isAllDigits parts[1]) do
+        local mt = parseModelToken parts[1]
+        while parts.count > 0 and mt != undefined do
         (
-            append nums parts[1]
+            for k = 1 to mt[2] do append nums mt[1]
             deleteItem parts 1
+            mt = if parts.count > 0 then parseModelToken parts[1] else undefined
         )
         if nums.count == 0 then return undefined
 
@@ -280,11 +312,15 @@ rollout sweepRollout "Sweep Script" width:560 height:690
         -- Whole-group Z rotation from the base keyword. BACK-ANGLE must be
         -- tested before ANGLE because it also contains "ANGLE".
         local rot = 0.0
-        if matchPattern viewStr pattern:"*BACK*ANGLE*" then rot = -145.0
-        else if matchPattern viewStr pattern:"*ANGLE*"  then rot = 35.0
-        else if matchPattern viewStr pattern:"*SIDE*"   then rot = 90.0
+        if matchPattern viewStr pattern:"*BACK*ANGLE*"  then rot = -145.0
+        else if matchPattern viewStr pattern:"*BACK*"      then rot = -180.0  -- BACK: like HEAD but rotated 180
+        else if matchPattern viewStr pattern:"*ANGLE*ALT*" then rot = -35.0   -- ANGLE-ALT: like ANGLE but mirrored
+        else if matchPattern viewStr pattern:"*ANGLE*"     then rot = 35.0
+        else if matchPattern viewStr pattern:"*SIDE*ALT*"  then rot = -90.0   -- SIDE-ALT: like SIDE but mirrored
+        else if matchPattern viewStr pattern:"*SIDE*"      then rot = 90.0
         else if matchPattern viewStr pattern:"*HEAD*"   then rot = 0.0
         else if matchPattern viewStr pattern:"*DETAIL*" then rot = 0.0
+        else if matchPattern viewStr pattern:"*TOP*"    then rot = 0.0  -- overhead; camera handled in cloneCameraToLayer
         else rot = 0.0
 
         SweepName fullName:txt nums:nums rot:rot viewStr:viewStr
@@ -580,11 +616,16 @@ rollout sweepRollout "Sweep Script" width:560 height:690
 
     -- Best camera-coordinate row for a variant + view string. VARIANT matches
     -- exactly (or '*'/ANY = any); VIEWTYPE matches as a substring of the view
-    -- string (or '*'/ANY). Scoring: an exact VARIANT dominates (1000); among
-    -- VIEWTYPE matches the LONGEST matching keyword wins, so "BACK-ANGLE" beats
-    -- "ANGLE" for a back-angle view (both are substrings, but BACK-ANGLE is
-    -- longer), and a specific keyword beats a "*" wildcard. Returns the matched
-    -- row (see readCoordRows) or undefined.
+    -- string (or '*'/ANY). Scoring is lexicographic: VIEWTYPE specificity is
+    -- PRIMARY (longest matching keyword * 1000), exact VARIANT is the tiebreaker
+    -- (+1). So the LONGEST matching viewtype always wins ("BACK-ANGLE" beats
+    -- "ANGLE" for a back-angle view; a named keyword beats a "*" wildcard), and
+    -- among rows tied on viewtype an exact VARIANT beats a "*" variant. This is
+    -- what lets a "*" (ALL VARIANTS) block act as shared defaults that any
+    -- specific-variant row overrides per (variant, view) -- WITHOUT a short
+    -- exact-variant viewtype (e.g. OTTOMAN,ANGLE) hijacking a longer view it is
+    -- merely a substring of (e.g. an OTTOMAN BACK-ANGLE shot, which correctly
+    -- falls through to *,BACK-ANGLE). Returns the matched row or undefined.
     fn lookupCameraCoords variant viewStr =
     (
         local rows = readCoordRows()
@@ -603,8 +644,8 @@ rollout sweepRollout "Sweep Script" width:560 height:690
             if vMatch and wMatch then
             (
                 local score = 0
-                if not vWild then score += 1000
-                if not wWild then score += wk.count
+                if not wWild then score += wk.count * 1000   -- viewtype specificity: primary
+                if not vWild then score += 1                 -- exact variant: tiebreaker
                 if score > bestScore then ( bestScore = score; best = r )
             )
         )
@@ -655,7 +696,7 @@ rollout sweepRollout "Sweep Script" width:560 height:690
     -- Clone the picked template camera + target into `layer`, rename after
     -- the package, and position to frame the arrangement (camera X locked
     -- to the package centre). camZ / tgtZ are the variant-driven heights.
-    fn cloneCameraToLayer layer pkgName pkgNodes camZ tgtZ coords =
+    fn cloneCameraToLayer layer pkgName pkgNodes camZ tgtZ coords isTop =
     (
         if pickedCamera == undefined or not isValidNode pickedCamera then return undefined
         local sources = #(pickedCamera)
@@ -667,17 +708,33 @@ rollout sweepRollout "Sweep Script" width:560 height:690
         if newNodes == undefined or newNodes.count == 0 then return undefined
         for n in newNodes where isValidNode n do
             try (layer.addNode n) catch()
+
+        -- Identify the camera and its target by CLASS, not array position:
+        -- maxOps.cloneNodes does NOT guarantee newNodes preserves the order of
+        -- `sources`, so newNodes[1] is not reliably the camera. Picking by
+        -- (superClassOf == camera) keeps camera vs target straight; otherwise
+        -- the X/Y/Z and TX/TY/TZ overrides land on the wrong node.
+        local camNode = undefined
+        local tgtNode = undefined
+        for n in newNodes where isValidNode n do
+        (
+            if superClassOf n == camera then camNode = n
+            else tgtNode = n
+        )
+        if camNode == undefined then camNode = newNodes[1]
+        if tgtNode == undefined then try (tgtNode = camNode.target) catch()
+
         try
         (
-            if newNodes.count >= 1 then newNodes[1].name = uniqueName (pkgName + "_Cam")
-            if newNodes.count >= 2 then newNodes[2].name = uniqueName (pkgName + "_Cam_Target")
+            if isValidNode camNode then camNode.name = uniqueName (pkgName + "_Cam")
+            if tgtNode != undefined and isValidNode tgtNode then tgtNode.name = uniqueName (pkgName + "_Cam_Target")
         )
         catch()
 
         -- Override the cloned camera's Sensor & Lens values (see applyCameraLens).
-        if newNodes.count >= 1 then applyCameraLens newNodes[1]
+        if isValidNode camNode then applyCameraLens camNode
 
-        if newNodes.count >= 2 then
+        if isValidNode camNode then
         (
             local mn = [1e30, 1e30, 1e30]
             local mx = [-1e30, -1e30, -1e30]
@@ -697,9 +754,6 @@ rollout sweepRollout "Sweep Script" width:560 height:690
 
             if found then
             (
-                local camNode = newNodes[1]
-                local tgtNode = newNodes[2]
-
                 local pkgW = mx.x - mn.x          -- A: object width, end to end (X).
 
                 -- Width : (target -> camera) distance ratio  A / B = 0.33,
@@ -709,12 +763,18 @@ rollout sweepRollout "Sweep Script" width:560 height:690
                 if coords != undefined and coords[9] then widthRatio = coords[10]  -- hasR, r
                 local camDist = if widthRatio > 0.0001 then (pkgW / widthRatio) else pkgW
 
-                -- Default: target on world X,Y origin; camera straight back on
-                -- -Y at the variant height. The camera_coordinates.csv may
-                -- override any of X / Y / Z (blank cell = keep the default).
+                -- Default camera placement.
+                --   Normal views: camera pulled straight back on -Y by camDist
+                --     at the variant height (camZ); target at the variant
+                --     target height.
+                --   TOP view (isTop): camera straight OVERHEAD at [0,0,camDist]
+                --     (height scaled from width by RATIO, 0.33 for top);
+                --     target at world origin [0,0,0] so it looks straight down.
+                -- The camera_coordinates.csv may override any of X / Y / Z and
+                -- TX / TY / TZ (blank cell = keep the default shown here).
                 local finalX = 0.0
-                local finalY = -camDist
-                local finalZ = camZ
+                local finalY = if isTop then 0.0 else -camDist
+                local finalZ = if isTop then camDist else camZ
                 if coords != undefined then
                 (
                     if coords[3] then finalX = coords[4]   -- hasX, x
@@ -722,19 +782,17 @@ rollout sweepRollout "Sweep Script" width:560 height:690
                     if coords[7] then finalZ = coords[8]   -- hasZ, z
                 )
 
-                -- Target defaults to world X,Y origin at the variant target
-                -- height. The TX / TY / TZ columns of camera_coordinates.csv
-                -- may override any of them (blank cell = keep the default).
                 local finalTX = 0.0
                 local finalTY = 0.0
-                local finalTZ = tgtZ
+                local finalTZ = if isTop then 0.0 else tgtZ
                 if coords != undefined then
                 (
                     if coords[13] then finalTX = coords[14]   -- hasTX, tx
                     if coords[15] then finalTY = coords[16]   -- hasTY, ty
                     if coords[17] then finalTZ = coords[18]   -- hasTZ, tz
                 )
-                try (tgtNode.pos = [finalTX, finalTY, finalTZ]) catch()
+                if tgtNode != undefined and isValidNode tgtNode then
+                    try (tgtNode.pos = [finalTX, finalTY, finalTZ]) catch()
                 try (camNode.pos = [finalX, finalY, finalZ]) catch()
             )
         )
@@ -823,7 +881,10 @@ rollout sweepRollout "Sweep Script" width:560 height:690
             (
                 local gbb = groupUnionBBox grp
                 local ctr = (gbb[1] + gbb[2]) / 2.0
-                try (about ctr (rotate grp (eulerangles 0 0 overallRot))) catch()
+                -- Report (don't swallow) a rotate failure so "rotation not
+                -- working" is visible instead of silently dropped.
+                try (about ctr (rotate grp (eulerangles 0 0 overallRot)))
+                catch (format "SWEEP: rotate FAILED for % : %\n" entry.fullName (getCurrentException()))
             )
             local gbb2 = groupUnionBBox grp
             local gctr = (gbb2[1] + gbb2[2]) / 2.0
@@ -842,7 +903,8 @@ rollout sweepRollout "Sweep Script" width:560 height:690
         -- computed above for the rotation lookup).
         local camH = variantCameraHeights chosenVar
         local coords = lookupCameraCoords chosenVar entry.viewStr
-        cloneCameraToLayer layer entry.fullName createdAll camH[1] camH[2] coords
+        local isTopView = (matchPattern entry.viewStr pattern:"*TOP*")
+        cloneCameraToLayer layer entry.fullName createdAll camH[1] camH[2] coords isTopView
 
         createdAll.count
     )
@@ -1006,6 +1068,41 @@ rollout sweepRollout "Sweep Script" width:560 height:690
     )
 
     fn getPendingEntries = pendingEntries
+
+    -- The actual whole-group Z rotation an entry will get when built. Mirrors
+    -- buildSweep WITHOUT cloning: resolve each model token's grid VARIANT
+    -- (honoring the OPEN/CLSD name suffix), take the first as chosenVar, detect
+    -- side-sofa overrides, then run the same groupRotFor lookup. Used by the
+    -- preview so the shown degrees match what gets built (e.rot alone is only
+    -- the name-based default and ignores the variant + CSV ROT column).
+    fn rotForEntry entry =
+    (
+        local modSuffix = ""
+        if (matchPattern entry.viewStr pattern:"*OPEN*") then modSuffix = "_OPEN"
+        else if (matchPattern entry.viewStr pattern:"*CLSD*") or (matchPattern entry.viewStr pattern:"*CLOSED*") then modSuffix = "_CLSD"
+
+        local firstVar = undefined
+        local hasLeftSofa = false
+        local hasRightSofa = false
+        for num in entry.nums do
+        (
+            local pr = undefined
+            if modSuffix != "" then pr = lookupPair pendingPairs (num + modSuffix)
+            if pr == undefined then pr = lookupPair pendingPairs num
+            if pr != undefined then
+            (
+                if firstVar == undefined then firstVar = pr[2]
+                local vtag = trimAll (toUpper pr[2])
+                if vtag == "LEFT SIDE SOFA"  then hasLeftSofa = true
+                if vtag == "RIGHT SIDE SOFA" then hasRightSofa = true
+            )
+        )
+        local chosenVar = if firstVar != undefined then firstVar else "DEFAULT"
+        local overallRot = groupRotFor chosenVar entry.viewStr entry.rot
+        if hasLeftSofa  then overallRot = groupRotFor "LEFT SIDE SOFA"  entry.viewStr -55.0
+        if hasRightSofa then overallRot = groupRotFor "RIGHT SIDE SOFA" entry.viewStr 55.0
+        overallRot
+    )
 
     fn executePending =
     (

@@ -127,14 +127,29 @@ template camera into the layer. Each name → its own hidden layer + group + cam
 - `SW`, `AGR` = ignored suffix tokens. Some rows are just `-AGR` (no `SW`) — handled.
 - Parsing: `parseSweepName` (struct `SweepName(fullName, nums, rot, viewStr)`).
 
-## Rotation table (whole-group Z, by base keyword — test BACK-ANGLE before ANGLE)
+## Rotation table (whole-group Z, by base keyword — order matters: test the longer/ALT keyword first)
 | View type | Z rot |
 |---|---|
 | ANGLE (incl. ANGLE-CLSD/OPEN) | 35° |
+| ANGLE-ALT (added 2026-06-24; like ANGLE, mirrored) | -35° |
 | BACK-ANGLE | -145° |
+| BACK (added 2026-06-24; like HEAD but 180° around) | -180° |
 | SIDE (incl. SIDE-CLSD/OPEN) | 90° |
+| SIDE-ALT (added 2026-06-24; like SIDE, mirrored) | -90° |
 | HEAD / HEAD-ON | 0° |
 | DETAIL (incl. DETAIL-CONTROL) | 0° |
+| TOP (overhead, added 2026-06-24) | 0° |
+
+Test order in `parseSweepName` / CSV scoring: `BACK-ANGLE` → `BACK` → `ANGLE-ALT` → `ANGLE` →
+`SIDE-ALT` → `SIDE` → `HEAD` → `DETAIL` → `TOP`. The `-ALT` rows reuse the base view's camera
+X/Y/Z/target in `camera_coordinates.csv`; only ROT flips sign (ANGLE-ALT -35, SIDE-ALT -90).
+`lookupCameraCoords` longest-keyword scoring keeps `ANGLE-ALT`/`SIDE-ALT` winning over plain
+`ANGLE`/`SIDE` for an *-ALT view, while a plain ANGLE/SIDE name matches only its own row.
+
+`BACK` reuses HEAD's camera X/Y/Z (and OTTOMAN's tuned values) in `camera_coordinates.csv`;
+only ROT differs (-180). Tested after `BACK-ANGLE` (which also contains "BACK") in both
+`parseSweepName` and `lookupCameraCoords` (longest-keyword scoring keeps BACK-ANGLE winning for
+back-angle views). Sofa BACK rows keep the ±55 override, same as their BACK-ANGLE rows.
 
 ## Decisions baked in (confirmed with user 2026-06-17)
 - **Input** = Excel file of names (not manual entry).
@@ -176,9 +191,23 @@ template camera into the layer. Each name → its own hidden layer + group + cam
   matrix of **all 10 variants × all 5 view types** (50 rows), grouped by `#` section-header lines
   (CSV cannot store colours — `#` lines are the visual separation and are skipped by the reader).
   Matching: VARIANT exact (or `*`/`ANY` = any), VIEWTYPE = substring of the parsed view string (or
-  `*`/`ANY`). Scoring in `lookupCameraCoords`: exact variant `+1000`, plus the **length of the
-  matched viewtype keyword** — so `BACK-ANGLE` beats `ANGLE` for a back-angle view (both are
-  substrings, longer wins) and specific beats `*`. A blank X/Y/Z cell keeps the computed default
+  `*`/`ANY`).
+  - **Restructured into a `*` "variable" block (2026-06-24).** Instead of repeating every view for
+    all 10 variants, the file now has ONE **`# ALL VARIANTS (*)`** block defining each view type
+    once (`*,ANGLE`, `*,HEAD`, `*,BACK`, `*,ANGLE-ALT`, …) that applies to every variant, plus a
+    per-variant override block ONLY where a variant truly differs (currently just **OTTOMAN**, which
+    has hand-tuned X/Z/target for ANGLE/ANGLE-ALT/SIDE/SIDE-ALT/HEAD/BACK/DETAIL). A view a variant
+    does not list is inherited from `*`. Edit a `*` row once → changes all variants. This is the
+    "define the variable in one place" the user asked for.
+  - **Scoring is now lexicographic (changed 2026-06-24): VIEWTYPE specificity is PRIMARY
+    (`wk.count * 1000`), exact VARIANT is the tiebreaker (`+1`).** The old "exact variant `+1000`
+    dominates" scoring broke `*` inheritance: a short exact-variant viewtype (e.g. `OTTOMAN,ANGLE`,
+    score 1005) would hijack a longer view it's merely a substring of (an OTTOMAN **BACK-ANGLE**
+    shot, where `*,BACK-ANGLE` should win). Now `*,BACK-ANGLE` (10000) beats `OTTOMAN,ANGLE` (5001),
+    while `OTTOMAN,ANGLE` (5001) still beats `*,ANGLE` (5000) for an ANGLE shot. So longest viewtype
+    always wins; exact variant only breaks ties between equally-specific viewtypes. (Lets OTTOMAN
+    omit its BACK-ANGLE/TOP rows and inherit them from `*`.)
+  - A blank X/Y/Z cell keeps the computed default
   (X=0, Y=−width/RATIO pullback, Z=`variantCameraHeights`); blank RATIO uses the built-in `0.33`.
   RATIO overrides the camera pull-back (`camDist = pkgW / RATIO`). Read via
   `readCoordRows`/`splitCsvLine` (manual comma split — `filterString` collapses empty fields and
@@ -192,6 +221,45 @@ template camera into the layer. Each name → its own hidden layer + group + cam
   fields and parses c[8]/c[9]/c[10]. In `cloneCameraToLayer` the target default `[0,0,tgtZ]` is
   overridden cell-by-cell (blank cell = keep default), same pattern as the camera position. Seed
   TX/TY/TZ are all blank (keep computed defaults).
+  - **Camera/target identified by CLASS, not clone order (fixed 2026-06-24).** Earlier code took
+    `camNode = newNodes[1]` / `tgtNode = newNodes[2]`, assuming `maxOps.cloneNodes` returns clones
+    in the same order as `sources`. It does NOT guarantee that, so when Max returned them swapped,
+    the camera X/Y/Z landed on the target node and the TX/TY/TZ on the camera — looked like "the
+    CSV target isn't fetching / OTTOMAN DETAIL came out wrong". Now `cloneCameraToLayer` picks
+    `camNode` via `superClassOf n == camera` and `tgtNode` as the other clone (fallback
+    `camNode.target`); naming, `applyCameraLens`, and the position/target overrides all key off
+    those. Target move is guarded by `isValidNode tgtNode`, so a free (targetless) camera still
+    gets its X/Y/Z + lens applied.
+
+- **Preview dialog now shows the REAL rotation (fixed 2026-06-24).** `sweepPreviewDlg` used to
+  display `e.rot` — the name-based default from `parseSweepName` — which ignores the model's VARIANT
+  and the CSV `ROT` column. So `OTTOMAN ... DETAIL` (real rot −15, but name-default 0) showed
+  "no rot" in the preview even though `buildSweep` applied −15 correctly. The build was never wrong;
+  the preview was. Fix: `sweepRollout.rotForEntry entry` mirrors `buildSweep`'s rotation decision
+  WITHOUT cloning (resolve each model token's grid VARIANT via `lookupPair pendingPairs` honoring the
+  OPEN/CLSD suffix → first = `chosenVar`, detect side-sofa overrides → `groupRotFor`), and the
+  preview calls it instead of reading `e.rot`. Lives next to `getPendingEntries`; relies on
+  `pendingPairs` being set before the preview opens (it is — RUN sets it just before `createDialog`).
+  Edge case: if a model maps but fails to clone, `buildSweep`'s `chosenVar` (first *cloned*) could
+  differ from `rotForEntry`'s (first *mapped*) — acceptable for a preview estimate.
+
+- **Rotate failure is now reported, not swallowed (fixed 2026-06-24).** The `about ctr (rotate grp
+  ...)` in `buildSweep` had a bare `catch()` that silently dropped any error, which would look like
+  "rotation not working". It now prints `SWEEP: rotate FAILED for <name> : <exception>` via
+  `getCurrentException()`.
+
+- **TOP (overhead) view added 2026-06-24.** New view-type for overhead shots (e.g.
+  `87214-08-TOP-SW-AGR` for the ottoman = model 08). The camera looks straight DOWN:
+  default camera pos `[0, 0, width/RATIO]` (RATIO seeded `0.3` for top, so height ≈ 3.33×width) and
+  target `[0, 0, 0]`. Implemented as an `isTop` arg to `cloneCameraToLayer` (computed at the call
+  site via `matchPattern entry.viewStr "*TOP*"`): when `isTop`, the camera default Y becomes 0 and
+  Z becomes `camDist` (instead of −camDist on Y at variant height), and the target default Z becomes
+  0. The CSV X/Y/Z + TX/TY/TZ overrides still apply on top (blank = keep these top defaults). Group
+  rotation for TOP is 0 (sofas keep ±55 via their CSV ROT). CSV ships a `TOP` row for **all 10
+  variants** (`VARIANT,TOP,0,0,,0.3,0,0,0,0`; sofas use ROT ∓55). The ottoman `TOP` name was
+  appended to `EXCEL\EXCEL FILE.xlsx` as an **inline string** row (row 65) — the stdlib
+  `xlsx_reader.py` reads `inlineStr` cells, verified. `parseSweepName` has an explicit (no-op, 0°)
+  `*TOP*` branch for clarity.
 
 - **Forced Sensor & Lens on the cloned camera (added 2026-06-24)** — `applyCameraLens camNode`
   overrides the cloned VRay Physical Camera's lens to the agreed render setup: `specify_fov = false`
