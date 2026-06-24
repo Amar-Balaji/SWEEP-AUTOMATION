@@ -167,7 +167,58 @@ template camera into the layer. Each name → its own hidden layer + group + cam
   ARM CHAIR / LOVE SEAT / SINGLE RECLINER OPEN / SINGLE RECLINER CLSD `78/41`; everything else
   incl. DEFAULT / DOUBLE SEATER / LEFT-RIGHT SIDE SOFA `107/43` (recliner height = single-seat,
   set 2026-06-18 pending confirmation). The arrangement's height is taken from the **FIRST model's variant**
-  (`rootVars[1]`).
+  (`rootVars[1]`). **Camera X / Y / Z can be overridden per (variant, view-type) by the external
+  `camera_coordinates.csv` (added 2026-06-23).**
+
+- **Editable camera-coordinate CSV (added 2026-06-23, RATIO + full matrix 2026-06-23)** =
+  `Sweep Script\camera_coordinates.csv`, next to the script. Columns
+  `VARIANT,VIEWTYPE,X,Y,Z,RATIO`. Lets the user move cameras without editing code. Ships as a full
+  matrix of **all 10 variants × all 5 view types** (50 rows), grouped by `#` section-header lines
+  (CSV cannot store colours — `#` lines are the visual separation and are skipped by the reader).
+  Matching: VARIANT exact (or `*`/`ANY` = any), VIEWTYPE = substring of the parsed view string (or
+  `*`/`ANY`). Scoring in `lookupCameraCoords`: exact variant `+1000`, plus the **length of the
+  matched viewtype keyword** — so `BACK-ANGLE` beats `ANGLE` for a back-angle view (both are
+  substrings, longer wins) and specific beats `*`. A blank X/Y/Z cell keeps the computed default
+  (X=0, Y=−width/RATIO pullback, Z=`variantCameraHeights`); blank RATIO uses the built-in `0.33`.
+  RATIO overrides the camera pull-back (`camDist = pkgW / RATIO`). Read via
+  `readCoordRows`/`splitCsvLine` (manual comma split — `filterString` collapses empty fields and
+  would lose blank columns). Seed values: `OTTOMAN,DETAIL → X=11,Z=81`; every `*,HEAD`/`*,SIDE →
+  Z=57`; RATIO `0.33` everywhere. Wired through `buildSweep` → `cloneCameraToLayer ... coords`.
+
+- **TX/TY/TZ target columns added to the CSV (added 2026-06-24)** — 3 columns appended after ROT
+  (`...,ROT,TX,TY,TZ`, 10 cols total) move the camera **TARGET** node, mirroring the X/Y/Z camera
+  columns. Row shape is now 18 elements: `#(vk, wk, hasX,x, hasY,y, hasZ,z, hasRatio,ratio,
+  hasRot,rot, hasTX,tx, hasTY,ty, hasTZ,tz)` (target at indices 13–18). `readCoordRows` pads to ≥10
+  fields and parses c[8]/c[9]/c[10]. In `cloneCameraToLayer` the target default `[0,0,tgtZ]` is
+  overridden cell-by-cell (blank cell = keep default), same pattern as the camera position. Seed
+  TX/TY/TZ are all blank (keep computed defaults).
+
+- **Forced Sensor & Lens on the cloned camera (added 2026-06-24)** — `applyCameraLens camNode`
+  overrides the cloned VRay Physical Camera's lens to the agreed render setup: `specify_fov = false`
+  (Field of view OFF), `film_width = 36.0` (Film gate mm), `focal_length = 100.0`,
+  `zoom_factor = 1.0`. No new camera is created — these are set on `newNodes[1]` right after the
+  `#copy` clone+rename in `cloneCameraToLayer`. Each assignment is wrapped in its own try/catch so a
+  different camera class (where a property name differs) is a silent no-op, not a crash.
+
+- **ROT column added to the CSV (added 2026-06-23)** — 7th column controls the whole-group Z
+  rotation, so the rotation table is now editable without code. Row shape is now
+  `#(vk, wk, hasX,x, hasY,y, hasZ,z, hasRatio,ratio, hasRot,rot)` (indices 11/12). `groupRotFor
+  variant viewStr fallback` returns the CSV ROT when filled, else the fallback. In `buildSweep`:
+  `overallRot = groupRotFor chosenVar viewStr entry.rot`, **then** `if hasLeftSofa → groupRotFor
+  "LEFT SIDE SOFA" viewStr -55`, `if hasRightSofa → groupRotFor "RIGHT SIDE SOFA" viewStr 55`. The
+  sofa overrides are applied AFTER the base lookup, so the documented "right sofa anywhere wins +55"
+  case is preserved (chosenVar = first model's variant, but the sofa override keys on its own row).
+  Seed ROT: ANGLE 35 / BACK-ANGLE −145 / SIDE 90 / HEAD 0 / DETAIL 0; LEFT SIDE SOFA rows −55,
+  RIGHT SIDE SOFA rows +55 (all views). `chosenVar` is now computed once before the rotation block
+  and reused for the camera. (User also hand-edited OTTOMAN/ANGLE RATIO to 0.3.)
+
+- **Excel read now Python-first (added 2026-06-23).** `readExcelLines` tries `readExcelLinesPython`
+  (Max's embedded interpreter runs `xlsx_reader.py`, a **pure-stdlib** `zipfile`+`re` xlsx parser —
+  no Excel.exe, no pip install) and falls back to `readExcelLinesOLE` (the old OLE path) if Python
+  is unavailable or returns nothing. Bridge: MaxScript sets `sweep_xlsx_path`/`sweep_out_path` and
+  `exec(open(reader).read())` in one `python.Execute` call (only relies on `python.Execute`); the
+  reader writes one row per line (UTF-8) to a temp `.txt` that MaxScript reads back. Chosen because
+  the user's company **blocks installing any AI/ML or pip packages** — stdlib only.
 
 - **Settings INI (added 2026-06-18)** = under the Excel row, **SAVE INI FILE** + **LOAD INI
   FILE** buttons. Default auto-save is still `settings\sweep_script_settings.ini`. SAVE picks a
@@ -195,7 +246,22 @@ template camera into the layer. Each name → its own hidden layer + group + cam
 alignment), `buildSweep` (clone→arrange→group→rotate→layer→camera), `cloneCameraToLayer`,
 `cameraHFOVDeg`, `executePending`. Settings path: `getDefaultSettingsPath` / `getSettingsPath` /
 `bootstrapActiveIni`; default file `settings\sweep_script_settings.ini`, optional user-chosen
-file via SAVE/LOAD INI.
+file via SAVE/LOAD INI. Camera coords: `getCoordsPath`/`readCoordRows`/`splitCsvLine`/
+`lookupCameraCoords` (reads `camera_coordinates.csv`). Excel: `readExcelLines` (wrapper) →
+`readExcelLinesPython` (via `xlsx_reader.py`) / `readExcelLinesOLE` (fallback).
+
+**New files (2026-06-23):** `Sweep Script\camera_coordinates.csv` (editable camera X/Y/Z),
+`Sweep Script\xlsx_reader.py` (pure-stdlib xlsx reader).
+
+## Gotchas (Sweep Script)
+- **`global sweepRollout` forward declaration (added 2026-06-23).** `sweepPreviewDlg` is defined
+  *before* `sweepRollout` but its handlers call `sweepRollout.getPendingEntries()` /
+  `.executePending()`. Without the forward `global` declaration, those names bind to an `undefined`
+  local on a fresh Max session's first evaluation → "Unknown property ... in undefined" at the
+  preview's `open` handler. (It silently "worked" only on a *second* run, when the global already
+  existed.) Keep the `global sweepRollout` line above `rollout sweepPreviewDlg`.
+- **MaxScript has no `continue`.** Skip logic must use nested `if/else if`, not `continue` (a bare
+  `continue` reads as an undefined global = silent no-op). See `readCoordRows`.
 
 ## Open assumptions to verify with user if issues arise
 - Rotation is about the assembled group's bbox center. If rotation should be about world origin

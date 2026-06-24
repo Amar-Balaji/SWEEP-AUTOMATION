@@ -62,6 +62,13 @@ Workflow:
 
 struct SweepName (fullName, nums, rot, viewStr)
 
+-- Forward declaration: sweepPreviewDlg (below) references sweepRollout in its
+-- handlers, but sweepRollout is defined further down. Declaring the global name
+-- here ensures those handlers bind to the global rollout instead of an
+-- undefined local -- otherwise the preview throws "... in undefined" on the
+-- first run of a fresh Max session (line 74).
+global sweepRollout
+
 rollout sweepPreviewDlg "Confirm Sweeps" width:460 height:530
 (
     label   lblCount  ""       pos:[10,10]  width:440 height:18
@@ -283,7 +290,54 @@ rollout sweepRollout "Sweep Script" width:560 height:690
         SweepName fullName:txt nums:nums rot:rot viewStr:viewStr
     )
 
-    fn readExcelLines filePath =
+    -- Read the .xlsx via Max's embedded Python + xlsx_reader.py (pure stdlib,
+    -- no Excel.exe, no install). Returns the rows, or undefined if Python is
+    -- unavailable / nothing was produced (caller then falls back to OLE).
+    fn readExcelLinesPython filePath =
+    (
+        local scriptDir = ""
+        try ( scriptDir = getFilenamePath (getThisScriptFilename()) ) catch()
+        if scriptDir == "" or scriptDir == undefined do scriptDir = "C:\\SWEEP SCRIPT\\Sweep Script\\"
+        local readerPath = scriptDir + "xlsx_reader.py"
+        if not doesFileExist readerPath then return undefined
+
+        local outPath = (getDir #temp) + "\\sweep_xlsx_out.txt"
+        try ( deleteFile outPath ) catch()
+
+        -- Set the two paths and exec the reader in one interpreter call, so we
+        -- only rely on python.Execute (most widely available) and the globals
+        -- are guaranteed visible to the reader. Raw triple-quoted strings keep
+        -- the Windows backslashes literal.
+        local pyCode = ""
+        pyCode += "sweep_xlsx_path = r'''" + filePath + "'''\n"
+        pyCode += "sweep_out_path = r'''" + outPath + "'''\n"
+        pyCode += "exec(open(r'''" + readerPath + "''').read())\n"
+        local ok = false
+        try ( python.Execute pyCode; ok = true ) catch ( ok = false )
+        if not ok then return undefined
+        if not doesFileExist outPath then return undefined
+
+        local rows = #()
+        local f = openFile outPath mode:"r"
+        if f == undefined then return undefined
+        try
+        (
+            while not (eof f) do
+            (
+                local ln = readLine f
+                if ln == undefined then exit
+                local t = trimAll ln
+                if t != "" then append rows t
+            )
+        )
+        catch()
+        close f
+        rows
+    )
+
+    -- Read the .xlsx via OLE automation (a running Excel.exe). Fragile (can
+    -- hang Excel) and needs Excel installed; kept as the fallback path.
+    fn readExcelLinesOLE filePath =
     (
         local rows = #()
         local excelApp = undefined
@@ -327,6 +381,16 @@ rollout sweepRollout "Sweep Script" width:560 height:690
         if excelApp != undefined then try (excelApp.Quit()) catch()
         if excelApp != undefined then try (releaseOLEObject excelApp) catch()
         rows
+    )
+
+    -- Try the pure-Python reader first (no Excel.exe); fall back to OLE if it
+    -- is unavailable or yields nothing.
+    fn readExcelLines filePath =
+    (
+        local rows = undefined
+        try ( rows = readExcelLinesPython filePath ) catch ( rows = undefined )
+        if rows != undefined and rows.count > 0 then return rows
+        readExcelLinesOLE filePath
     )
 
     fn safeCreateHiddenLayer layerName =
@@ -434,6 +498,128 @@ rollout sweepRollout "Sweep Script" width:560 height:690
         cursorX + w
     )
 
+    -- Path to the editable camera-coordinate CSV next to the script. Users
+    -- edit this in Excel/Notepad to change camera positions without touching code.
+    fn getCoordsPath =
+    (
+        local scriptDir = ""
+        try ( scriptDir = getFilenamePath (getThisScriptFilename()) ) catch()
+        if scriptDir == "" or scriptDir == undefined do scriptDir = "C:\\SWEEP SCRIPT\\Sweep Script\\"
+        scriptDir + "camera_coordinates.csv"
+    )
+
+    -- Split a CSV line on commas, PRESERVING empty fields (filterString
+    -- collapses them, which would lose blank X/Y/Z columns).
+    fn splitCsvLine ln =
+    (
+        local fields = #()
+        local cur = ""
+        for i = 1 to ln.count do
+        (
+            local ch = ln[i]
+            if ch == "," then ( append fields cur; cur = "" )
+            else cur += ch
+        )
+        append fields cur
+        fields
+    )
+
+    -- Read camera_coordinates.csv into rows of
+    --   #(varKey, viewKey, hasX,x, hasY,y, hasZ,z, hasRatio,ratio, hasRot,rot,
+    --     hasTX,tx, hasTY,ty, hasTZ,tz).
+    -- TX/TY/TZ are the camera TARGET position overrides (last 3 columns).
+    -- First line (header) and blank / '#' comment lines are skipped.
+    fn readCoordRows =
+    (
+        local rows = #()
+        local path = getCoordsPath()
+        if not doesFileExist path then return rows
+        local f = openFile path mode:"r"
+        if f == undefined then return rows
+        try
+        (
+            local first = true
+            while not (eof f) do
+            (
+                local ln = readLine f
+                if ln == undefined then exit
+                local t = trimAll ln
+                -- Skip the header line, blank lines and '#' comment lines.
+                -- (MaxScript has no `continue`, so this is nested as else-if.)
+                if first then ( first = false )
+                else if t != "" and t[1] != "#" then
+                (
+                    local c = splitCsvLine ln
+                    while c.count < 10 do append c ""
+                    local vk = trimAll (toUpper c[1])
+                    local wk = trimAll (toUpper c[2])
+                    local sx = trimAll c[3]
+                    local sy = trimAll c[4]
+                    local sz = trimAll c[5]
+                    local sr = trimAll c[6]
+                    local srot = trimAll c[7]
+                    local stx = trimAll c[8]
+                    local sty = trimAll c[9]
+                    local stz = trimAll c[10]
+                    append rows #(vk, wk, \
+                        (sx != ""),   (if sx != ""   then (sx as float)   else 0.0), \
+                        (sy != ""),   (if sy != ""   then (sy as float)   else 0.0), \
+                        (sz != ""),   (if sz != ""   then (sz as float)   else 0.0), \
+                        (sr != ""),   (if sr != ""   then (sr as float)   else 0.0), \
+                        (srot != ""), (if srot != "" then (srot as float) else 0.0), \
+                        (stx != ""),  (if stx != ""  then (stx as float)  else 0.0), \
+                        (sty != ""),  (if sty != ""  then (sty as float)  else 0.0), \
+                        (stz != ""),  (if stz != ""  then (stz as float)  else 0.0))
+                )
+            )
+        )
+        catch()
+        close f
+        rows
+    )
+
+    -- Best camera-coordinate row for a variant + view string. VARIANT matches
+    -- exactly (or '*'/ANY = any); VIEWTYPE matches as a substring of the view
+    -- string (or '*'/ANY). Scoring: an exact VARIANT dominates (1000); among
+    -- VIEWTYPE matches the LONGEST matching keyword wins, so "BACK-ANGLE" beats
+    -- "ANGLE" for a back-angle view (both are substrings, but BACK-ANGLE is
+    -- longer), and a specific keyword beats a "*" wildcard. Returns the matched
+    -- row (see readCoordRows) or undefined.
+    fn lookupCameraCoords variant viewStr =
+    (
+        local rows = readCoordRows()
+        local best = undefined
+        local bestScore = -1
+        local V = trimAll (toUpper variant)
+        local VS = toUpper viewStr
+        for r in rows do
+        (
+            local vk = r[1]
+            local wk = r[2]
+            local vWild = (vk == "*" or vk == "ANY")
+            local wWild = (wk == "*" or wk == "ANY")
+            local vMatch = (vWild or vk == V)
+            local wMatch = (wWild or (matchPattern VS pattern:("*" + wk + "*")))
+            if vMatch and wMatch then
+            (
+                local score = 0
+                if not vWild then score += 1000
+                if not wWild then score += wk.count
+                if score > bestScore then ( bestScore = score; best = r )
+            )
+        )
+        best
+    )
+
+    -- Whole-group Z rotation for a (variant, view) from the ROT column of
+    -- camera_coordinates.csv. Returns the CSV value when that cell is filled,
+    -- otherwise `fallback` (the view-type angle / sofa override from the code).
+    fn groupRotFor variant viewStr fallback =
+    (
+        local cr = lookupCameraCoords variant viewStr
+        if cr != undefined and cr[11] then cr[12] else fallback
+    )
+
     -- Camera Z (height) and target Z by variant, in cm/scene units:
     --   #(cameraZ, targetZ). Anything not listed (DEFAULT, DOUBLE SEATER,
     --   LEFT/RIGHT SIDE SOFA, ...) uses the DEFAULT pair.
@@ -451,10 +637,25 @@ rollout sweepRollout "Sweep Script" width:560 height:690
         )
     )
 
+    -- Force the Sensor & Lens values on a cloned VRay Physical Camera to match
+    -- the agreed render setup (screenshot 2026-06-24): Field of view OFF,
+    -- Film gate 36 mm, Focal length 100 mm, Zoom factor 1.0. Property names are
+    -- those of the modern VRayPhysicalCamera; each set is wrapped so a missing
+    -- property on a different camera class is a silent no-op rather than a crash.
+    fn applyCameraLens camNode =
+    (
+        if camNode == undefined or not isValidNode camNode then return false
+        try (camNode.specify_fov = false) catch()   -- Field of view: unchecked
+        try (camNode.film_width   = 36.0)  catch()   -- Film gate (mm)
+        try (camNode.focal_length = 100.0) catch()   -- Focal length (mm)
+        try (camNode.zoom_factor  = 1.0)   catch()   -- Zoom factor
+        true
+    )
+
     -- Clone the picked template camera + target into `layer`, rename after
     -- the package, and position to frame the arrangement (camera X locked
     -- to the package centre). camZ / tgtZ are the variant-driven heights.
-    fn cloneCameraToLayer layer pkgName pkgNodes camZ tgtZ =
+    fn cloneCameraToLayer layer pkgName pkgNodes camZ tgtZ coords =
     (
         if pickedCamera == undefined or not isValidNode pickedCamera then return undefined
         local sources = #(pickedCamera)
@@ -472,6 +673,9 @@ rollout sweepRollout "Sweep Script" width:560 height:690
             if newNodes.count >= 2 then newNodes[2].name = uniqueName (pkgName + "_Cam_Target")
         )
         catch()
+
+        -- Override the cloned camera's Sensor & Lens values (see applyCameraLens).
+        if newNodes.count >= 1 then applyCameraLens newNodes[1]
 
         if newNodes.count >= 2 then
         (
@@ -499,13 +703,39 @@ rollout sweepRollout "Sweep Script" width:560 height:690
                 local pkgW = mx.x - mn.x          -- A: object width, end to end (X).
 
                 -- Width : (target -> camera) distance ratio  A / B = 0.33,
-                -- so B = A / 0.33. Camera is pulled back along -Y by B.
+                -- so B = A / 0.33. Camera is pulled back along -Y by B. The
+                -- RATIO column of camera_coordinates.csv can override 0.33.
                 local widthRatio = 0.33
+                if coords != undefined and coords[9] then widthRatio = coords[10]  -- hasR, r
                 local camDist = if widthRatio > 0.0001 then (pkgW / widthRatio) else pkgW
 
-                -- Target on the world X,Y origin; camera straight back on -Y.
-                try (tgtNode.pos = [0, 0, tgtZ]) catch()
-                try (camNode.pos = [0, -camDist, camZ]) catch()
+                -- Default: target on world X,Y origin; camera straight back on
+                -- -Y at the variant height. The camera_coordinates.csv may
+                -- override any of X / Y / Z (blank cell = keep the default).
+                local finalX = 0.0
+                local finalY = -camDist
+                local finalZ = camZ
+                if coords != undefined then
+                (
+                    if coords[3] then finalX = coords[4]   -- hasX, x
+                    if coords[5] then finalY = coords[6]   -- hasY, y
+                    if coords[7] then finalZ = coords[8]   -- hasZ, z
+                )
+
+                -- Target defaults to world X,Y origin at the variant target
+                -- height. The TX / TY / TZ columns of camera_coordinates.csv
+                -- may override any of them (blank cell = keep the default).
+                local finalTX = 0.0
+                local finalTY = 0.0
+                local finalTZ = tgtZ
+                if coords != undefined then
+                (
+                    if coords[13] then finalTX = coords[14]   -- hasTX, tx
+                    if coords[15] then finalTY = coords[16]   -- hasTY, ty
+                    if coords[17] then finalTZ = coords[18]   -- hasTZ, tz
+                )
+                try (tgtNode.pos = [finalTX, finalTY, finalTZ]) catch()
+                try (camNode.pos = [finalX, finalY, finalZ]) catch()
             )
         )
 
@@ -575,10 +805,13 @@ rollout sweepRollout "Sweep Script" width:560 height:690
 
         -- Overall Z rotation: LEFT SIDE SOFA -> -55, RIGHT SIDE SOFA -> +55,
         -- otherwise the view-type angle. RIGHT is checked last, so if a right
-        -- side sofa is anywhere in the list it wins (+55).
-        local overallRot = entry.rot
-        if hasLeftSofa  then overallRot = -55.0
-        if hasRightSofa then overallRot =  55.0
+        -- side sofa is anywhere in the list it wins (+55). Each value can be
+        -- overridden from the CSV ROT column (keyed on the relevant variant +
+        -- view); a blank ROT cell keeps the code value shown here as fallback.
+        local chosenVar = if rootVars.count > 0 then rootVars[1] else "DEFAULT"
+        local overallRot = groupRotFor chosenVar entry.viewStr entry.rot
+        if hasLeftSofa  then overallRot = groupRotFor "LEFT SIDE SOFA"  entry.viewStr -55.0
+        if hasRightSofa then overallRot = groupRotFor "RIGHT SIDE SOFA" entry.viewStr 55.0
 
         -- Group the set, rotate it about its bbox centre on Z, then move the
         -- whole group so its bbox centre sits at the world origin (X=0, Y=0).
@@ -605,10 +838,11 @@ rollout sweepRollout "Sweep Script" width:560 height:690
         if grp != undefined then try (layer.addNode grp) catch()
 
         -- Clone a framed copy of the template camera into this layer. Camera
-        -- and target heights come from the FIRST model's variant.
-        local chosenVar = if rootVars.count > 0 then rootVars[1] else "DEFAULT"
+        -- and target heights come from the FIRST model's variant (chosenVar,
+        -- computed above for the rotation lookup).
         local camH = variantCameraHeights chosenVar
-        cloneCameraToLayer layer entry.fullName createdAll camH[1] camH[2]
+        local coords = lookupCameraCoords chosenVar entry.viewStr
+        cloneCameraToLayer layer entry.fullName createdAll camH[1] camH[2] coords
 
         createdAll.count
     )
