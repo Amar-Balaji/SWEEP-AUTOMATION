@@ -1,4 +1,9 @@
+# Python bytecode cache (from xlsx_reader.py)
+__pycache__/
+*.pyc
+
 # Generated runtime settings
+settings/
 Sweep Script/settings/
 *.ini
 

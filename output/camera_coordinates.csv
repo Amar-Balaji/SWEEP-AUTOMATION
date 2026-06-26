@@ -1,0 +1,49 @@
+VARIANT,VIEWTYPE,X,Y,Z,RATIO,ROT,TX,TY,TZ
+# ============================================================,,,,,,,,,
+#  CAMERA + ROTATION  -  edit values, save as CSV (keep commas),,,,,,,,
+"#  HOW THIS FILE WORKS  (VARIANT = * is the shared ""variable"")",,,,,,,,,
+#  * rows below = ONE definition per view type (HEAD, BACK,,,,,,,,
+#    ANGLE-ALT, ...) that applies to EVERY variant. Edit a view,,,,,,,,
+#    in the * block once and it changes for all variants.,,,,,,,,,
+#  To make ONE variant differ, add a row with that exact,,,,,,,,
+#    VARIANT name (e.g. OTTOMAN below). A specific-variant row,,,,,,,,,
+#    OVERRIDES the * row for that variant + view only; any view,,,,,,,,,
+#    a variant does NOT list is inherited from the * block.,,,,,,,,,
+#  X / Y / Z : camera position in cm. BLANK = auto (X=0,,,,,,,,,
+#              Y=-width/RATIO pull-back, Z=variant height).,,,,,,,,
+#  TOP view  : camera is OVERHEAD - auto becomes X=0,,Y=0,,,,,,,
+#              Z=width/RATIO (height), target [0,0,0].,,,,,,
+#  RATIO     : width-to-distance pull-back (default 0.33).,,,,,,,,,
+#  ROT       : whole-group Z rotation in degrees. BLANK = use,,,,,,,,,
+#              the built-in view-type angle. Defaults shown:,,,,,,,,,
+#              ANGLE 35 / ANGLE-ALT -35 / BACK-ANGLE -145 / SIDE 90 /,,,,,,,,,
+#              SIDE-ALT -90 / HEAD 0 / BACK -180 / DETAIL 0 / TOP 0.,,,,,,,,,
+#              LEFT/RIGHT SIDE SOFA get a sofa override (-55 / +55),,,,,,,,,
+#              from code when present; add a sofa row here to change it.,,,,,,,,,
+#  TX/TY/TZ  : camera TARGET position in cm. BLANK = auto,,,,,,,,,
+#              (TX=0, TY=0, TZ=variant target height).,,,,,,,
+#  Match: VARIANT exact (or * = any) + VIEWTYPE in the name.,,,,,,,,,
+#  Lines starting with # are notes and are ignored.,,,,,,,,,
+#  NOTE: CSV cannot store cell colours; the # headers group,,,,,,,,,
+#        the rows instead (colours are lost on save to .csv).,,,,,,,,,
+# ============================================================,,,,,,,,,
+,,,,,,,,,
+# ===== ALL VARIANTS  ( * = the shared variable; edit a view once here ) =====,,,,,,,,,
+*,ANGLE,,,,0.33,35,,,
+*,ANGLE-ALT,,,,0.33,-35,,,
+*,BACK-ANGLE,,,,0.33,-145,,,
+*,SIDE,,,57,0.33,90,,,
+*,SIDE-ALT,,,57,0.33,-90,,,
+*,HEAD,,,57,0.33,0,,,
+*,BACK,,,57,0.33,-180,,,
+*,DETAIL,,,,0.33,-15,,,
+*,TOP,0,0,,0.33,0,0,0,0
+,,,,,,,,,
+# ===== OTTOMAN  ( overrides the * rows for this variant; unlisted views inherit * ) =====,,,,,,,,,
+OTTOMAN,ANGLE,-0.743,,45.458,0.3,35,-0.743,-9.995,22.712
+OTTOMAN,ANGLE-ALT,-0.743,,45.458,0.3,-35,-0.743,-9.995,22.712
+OTTOMAN,SIDE,0.43,,57.477,0.27,90,0.43,-9.988,22.739
+OTTOMAN,SIDE-ALT,0.43,,57.477,0.27,-90,0.43,-9.988,22.739
+OTTOMAN,HEAD,0.5,,57.477,0.27,0,0.5,-9.988,22.739
+OTTOMAN,BACK,0.5,,57.477,0.27,-180,0.5,-9.988,22.739
+OTTOMAN,DETAIL,26.271,,81.218,0.51,-15,16.934,-13.245,15.713
